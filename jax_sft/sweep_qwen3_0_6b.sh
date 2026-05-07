@@ -10,14 +10,19 @@ set -euo pipefail
 #   MAX_ROWS=64 MAX_WRONG=32 MAX_CORRECT=32 \
 #   LRS="1e-8 5e-8" EPOCHS_LIST="1" \
 #   WANDB_PROJECT=cnl-repro bash jax_sft/sweep_qwen3_0_6b.sh csqa
+#
+# MASK_STAGES applies only to CNL:
+#   gradient = mask raw gradients before the optimizer update
+#   update   = mask the final optimizer update direction
+# SFT runs ignore MASK_STAGES and are logged as masknone.
 
 DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
 MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 
-LRS="${LRS:-1e-8 2e-8 5e-8 1e-7}"
-EPOCHS_LIST="${EPOCHS_LIST:-1}"
-OPTIMIZERS="${OPTIMIZERS:-sgd}"
+LRS="${LRS:-1e-9 2e-9 5e-9 1e-8 2e-8 5e-8 1e-7 2e-7 5e-7 1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4}"
+EPOCHS_LIST="${EPOCHS_LIST:-1 2 3}"
+OPTIMIZERS="${OPTIMIZERS:-adamw sgd}"
 MASK_STAGES="${MASK_STAGES:-gradient update}"
 METHODS="${METHODS:-cnl sft}"
 
@@ -26,6 +31,9 @@ SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-${DATASET}-sweep}"
 OUT_ROOT="${OUT_ROOT:-jax_ckpts/sweeps/${SWEEP_NAME}}"
 DATA_ROOT="${DATA_ROOT:-data}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
+MAX_ROWS="${MAX_ROWS:-512}"
+MAX_WRONG="${MAX_WRONG:-256}"
+MAX_CORRECT="${MAX_CORRECT:-256}"
 
 OUT_CORRECT="${OUT_CORRECT:-${DATA_ROOT}/${DATASET}_correct_${MODEL_TAG}.jsonl}"
 OUT_WRONG="${OUT_WRONG:-${DATA_ROOT}/${DATASET}_wrong_${MODEL_TAG}.jsonl}"
@@ -70,6 +78,9 @@ run_one() {
   MASK_STAGE="${mask_stage}" \
   USE_FREEZE="${use_freeze}" \
   MAX_LENGTH="${MAX_LENGTH}" \
+  MAX_ROWS="${MAX_ROWS}" \
+  MAX_WRONG="${MAX_WRONG}" \
+  MAX_CORRECT="${MAX_CORRECT}" \
   SKIP_SPLIT="${SKIP_SPLIT_FOR_RUN}" \
   WANDB_PROJECT="${WANDB_PROJECT}" \
   WANDB_RUN_NAME="${run_name}" \
@@ -84,6 +95,9 @@ echo "EPOCHS_LIST   : ${EPOCHS_LIST}"
 echo "OPTIMIZERS    : ${OPTIMIZERS}"
 echo "MASK_STAGES   : ${MASK_STAGES}"
 echo "METHODS       : ${METHODS}"
+echo "MAX_ROWS      : ${MAX_ROWS}"
+echo "MAX_WRONG     : ${MAX_WRONG}"
+echo "MAX_CORRECT   : ${MAX_CORRECT}"
 echo "WANDB_PROJECT : ${WANDB_PROJECT}"
 echo "OUT_ROOT      : ${OUT_ROOT}"
 echo "================================================="

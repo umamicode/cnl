@@ -97,12 +97,19 @@ bash jax_sft/sweep_qwen3_0_6b.sh csqa
 Sweep knobs:
 
 ```text
-LRS="1e-8 2e-8 5e-8 1e-7"
-EPOCHS_LIST="1 3"
-OPTIMIZERS="sgd adamw"
+LRS="1e-9 2e-9 5e-9 1e-8 2e-8 5e-8 1e-7 2e-7 5e-7 1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4"
+EPOCHS_LIST="1 2 3"
+OPTIMIZERS="adamw sgd"
 MASK_STAGES="gradient update"
 METHODS="cnl sft"
+MAX_ROWS=512
+MAX_WRONG=256
+MAX_CORRECT=256
 ```
+
+`MASK_STAGES` only affects CNL runs. `gradient` masks raw gradients before the
+optimizer update; `update` masks the final optimizer update direction. SFT
+ignores this setting and is logged as `masknone`.
 
 This wrapper defaults to `Qwen/Qwen3-0.6B`, whose Hugging Face model card
 requires recent `transformers` support for Qwen3. Use `transformers>=4.51,<5`
