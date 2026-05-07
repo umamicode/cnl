@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from jax.sharding import PartitionSpec as P
 from tqdm import tqdm
 
 if __package__ is None or __package__ == "":
@@ -153,7 +154,11 @@ def make_optimizer(name: str, lr: float) -> optax.GradientTransformation:
 def loss_for_batch(forward: Any, weights: Any, batch: dict[str, jax.Array]) -> jax.Array:
     logits = forward(batch["tokens"], weights)
     logits = logits[jnp.arange(logits.shape[0]), batch["last_idx"], :]
-    return optax.softmax_cross_entropy_with_integer_labels(logits, batch["label_id"]).mean()
+    logprobs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+    label_logprobs = logprobs.at[jnp.arange(logprobs.shape[0]), batch["label_id"]].get(
+        out_sharding=P("data")
+    )
+    return -label_logprobs.mean()
 
 
 def predict_abcd(predict_logits_fn: Any, weights: Any, batch: dict[str, Any], cand_ids: np.ndarray) -> str:
