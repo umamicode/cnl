@@ -29,6 +29,7 @@ DATA_ROOT="${DATA_ROOT:-data}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-1}"
 FROM_PT="${FROM_PT:-0}"
 EVAL_BEFORE_TRAIN="${EVAL_BEFORE_TRAIN:-1}"
+SKIP_SPLIT="${SKIP_SPLIT:-0}"
 
 # Optional smoke-test caps.
 MAX_ROWS="${MAX_ROWS:-}"
@@ -126,6 +127,7 @@ echo "USE_FREEZE    : ${USE_FREEZE}"
 echo "OPTIMIZER     : ${OPTIMIZER}"
 echo "MASK_STAGE    : ${MASK_STAGE}"
 echo "MAX_LENGTH    : ${MAX_LENGTH}"
+echo "SKIP_SPLIT    : ${SKIP_SPLIT}"
 echo "====================================================="
 
 if [[ "${BACKEND}" == "ptx" ]]; then
@@ -146,6 +148,9 @@ if [[ "${BACKEND}" == "ptx" ]]; then
   )
   if [[ -n "${PTX_DIR}" ]]; then
     PTX_FLAGS+=(--ptx_dir "${PTX_DIR}")
+  fi
+  if [[ "${SKIP_SPLIT}" == "1" ]]; then
+    PTX_FLAGS+=(--skip_split)
   fi
   if [[ -n "${MAX_ROWS}" ]]; then
     PTX_FLAGS+=(--max_rows "${MAX_ROWS}")

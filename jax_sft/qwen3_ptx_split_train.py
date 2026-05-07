@@ -39,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out_correct_jsonl", type=str, required=True)
     p.add_argument("--out_wrong_jsonl", type=str, required=True)
     p.add_argument("--out_dir", type=str, required=True)
+    p.add_argument(
+        "--skip_split",
+        action="store_true",
+        help="Reuse out_correct_jsonl/out_wrong_jsonl instead of running model inference split.",
+    )
     p.add_argument("--max_length", type=int, default=256)
     p.add_argument("--max_rows", type=int, default=None)
     p.add_argument("--max_wrong", type=int, default=None)
@@ -281,18 +286,29 @@ def main() -> None:
         lambda w, batch: forward(batch["tokens"], w)[0, batch["last_idx"][0], :]
     )
 
-    rows = load_jsonl(args.source_jsonl, args.max_rows)
     cand_ids = candidate_ids(model.tokenizer)
-    correct_batches, wrong_batches = split_rows(
-        rows,
-        model.tokenizer,
-        weights,
-        predict_logits_fn,
-        cand_ids,
-        args.max_length,
-        args.out_correct_jsonl,
-        args.out_wrong_jsonl,
-    )
+    if args.skip_split:
+        print("Reusing existing split files.")
+        correct_rows = load_jsonl([args.out_correct_jsonl], args.max_rows)
+        wrong_rows = load_jsonl([args.out_wrong_jsonl], args.max_rows)
+        correct_batches = [
+            batch for row in tqdm(correct_rows, desc="tokenize correct") if (batch := tokenize_row(model.tokenizer, row, args.max_length)) is not None
+        ]
+        wrong_batches = [
+            batch for row in tqdm(wrong_rows, desc="tokenize wrong") if (batch := tokenize_row(model.tokenizer, row, args.max_length)) is not None
+        ]
+    else:
+        rows = load_jsonl(args.source_jsonl, args.max_rows)
+        correct_batches, wrong_batches = split_rows(
+            rows,
+            model.tokenizer,
+            weights,
+            predict_logits_fn,
+            cand_ids,
+            args.max_length,
+            args.out_correct_jsonl,
+            args.out_wrong_jsonl,
+        )
     if args.max_correct is not None:
         correct_batches = correct_batches[: args.max_correct]
     if args.max_wrong is not None:

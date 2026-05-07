@@ -75,6 +75,35 @@ MAX_LENGTH=256 \
 bash jax_sft/run_qwen3_0_6b_split_train.sh csqa
 ```
 
+Run a matched CNL/baseline sweep:
+
+```bash
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/sweep_qwen3_0_6b.sh csqa
+```
+
+Small smoke sweep:
+
+```bash
+MAX_ROWS=64 \
+MAX_WRONG=32 \
+MAX_CORRECT=32 \
+LRS="1e-8 5e-8" \
+EPOCHS_LIST="1" \
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/sweep_qwen3_0_6b.sh csqa
+```
+
+Sweep knobs:
+
+```text
+LRS="1e-8 2e-8 5e-8 1e-7"
+EPOCHS_LIST="1 3"
+OPTIMIZERS="sgd adamw"
+MASK_STAGES="gradient update"
+METHODS="cnl sft"
+```
+
 This wrapper defaults to `Qwen/Qwen3-0.6B`, whose Hugging Face model card
 requires recent `transformers` support for Qwen3. Use `transformers>=4.51,<5`
 for this runner: 4.51+ recognizes Qwen3 configs, while 5.x no longer exposes
