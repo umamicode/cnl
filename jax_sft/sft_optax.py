@@ -3,8 +3,8 @@
 """JAX/Optax SFT runner for Collaborative Neuron Learning.
 
 This script mirrors ``sft/sft.py`` but uses Flax models and Optax optimizers.
-It is intentionally simple: one JSONL sample at a time, next-token loss on the
-answer letter, and per-sample CNL masking.
+It uses fixed-length tokenization and jitted per-sample steps so TPU smoke tests
+do not recompile for every question length.
 """
 
 from __future__ import annotations
@@ -89,6 +89,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap for correct/mastered rows, useful for smoke tests.",
     )
+    p.add_argument(
+        "--max_length",
+        type=int,
+        default=256,
+        help="Static token length for padding/truncation. Keep fixed for JIT reuse.",
+    )
+    p.add_argument("--wandb_project", type=str, default=None)
+    p.add_argument("--wandb_entity", type=str, default=None)
+    p.add_argument("--wandb_run_name", type=str, default=None)
+    p.add_argument("--wandb_mode", type=str, default=None, help="Examples: online, offline, disabled.")
     return p.parse_args()
 
 
@@ -102,23 +112,59 @@ def make_optimizer(name: str, lr: float) -> optax.GradientTransformation:
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
-def build_inputs(tok: AutoTokenizer, question: str) -> dict[str, jax.Array]:
+def format_prompt(tok: AutoTokenizer, question: str) -> str:
     if getattr(tok, "chat_template", None):
-        prompt = tok.apply_chat_template(
+        return tok.apply_chat_template(
             [{"role": "user", "content": question}],
             tokenize=False,
             add_generation_prompt=True,
         )
-    else:
-        prompt = question
 
-    batch = tok(prompt, return_tensors="np")
-    return {k: jnp.asarray(v) for k, v in batch.items()}
+    return question
 
 
-def label_token_id(tok: AutoTokenizer, label: str) -> jax.Array:
+def ensure_pad_token(tok: AutoTokenizer) -> None:
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+
+def label_token_id(tok: AutoTokenizer, label: str) -> int:
     ids = tok(label, add_special_tokens=False, return_tensors="np").input_ids
-    return jnp.asarray([int(ids[0, -1])])
+    return int(ids[0, -1])
+
+
+def tokenize_row(tok: AutoTokenizer, row: dict[str, Any], max_length: int) -> dict[str, Any]:
+    batch = tok(
+        format_prompt(tok, row["question"]),
+        return_tensors="np",
+        padding="max_length",
+        truncation=True,
+        max_length=max_length,
+    )
+    return {
+        "input_ids": jnp.asarray(batch["input_ids"], dtype=jnp.int32),
+        "attention_mask": jnp.asarray(batch["attention_mask"], dtype=jnp.int32),
+        "label_id": jnp.asarray([label_token_id(tok, row["label"])], dtype=jnp.int32),
+        "label": row["label"],
+        "question": row["question"],
+    }
+
+
+def tokenize_rows(
+    tok: AutoTokenizer,
+    rows: list[dict[str, Any]],
+    max_length: int,
+    desc: str,
+) -> list[dict[str, Any]]:
+    return [tokenize_row(tok, row, max_length) for row in tqdm(rows, desc=desc)]
+
+
+def array_batch(batch: dict[str, Any]) -> dict[str, jax.Array]:
+    return {
+        "input_ids": batch["input_ids"],
+        "attention_mask": batch["attention_mask"],
+        "label_id": batch["label_id"],
+    }
 
 
 def candidate_ids(tok: AutoTokenizer) -> np.ndarray:
@@ -131,52 +177,95 @@ def candidate_ids(tok: AutoTokenizer) -> np.ndarray:
     )
 
 
-def loss_for_row(model: Any, tok: AutoTokenizer, params: Any, row: dict[str, Any]) -> jax.Array:
-    inputs = build_inputs(tok, row["question"])
-    labels = label_token_id(tok, row["label"])
-    outputs = model(**inputs, params=params, train=False)
-    logits = outputs.logits[:, -1, :]
-    return optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
+def loss_for_batch(model: Any, params: Any, batch: dict[str, jax.Array]) -> jax.Array:
+    outputs = model(
+        input_ids=batch["input_ids"],
+        attention_mask=batch["attention_mask"],
+        params=params,
+        train=False,
+    )
+    lengths = jnp.sum(batch["attention_mask"], axis=1) - 1
+    logits = outputs.logits[jnp.arange(outputs.logits.shape[0]), lengths, :]
+    return optax.softmax_cross_entropy_with_integer_labels(logits, batch["label_id"]).mean()
 
 
 def mean_grad_correct(
     model: Any,
-    tok: AutoTokenizer,
     params: Any,
-    rows: list[dict[str, Any]],
+    batches: list[dict[str, Any]],
+    loss_grad_fn: Any,
 ) -> Any:
-    if not rows:
+    if not batches:
         raise ValueError("correct rows are empty")
 
     total_grad = None
-    loss_grad_fn = jax.value_and_grad(lambda p, row: loss_for_row(model, tok, p, row))
 
-    for row in tqdm(rows, desc="correct mean-grad"):
-        _, grad = loss_grad_fn(params, row)
+    for batch in tqdm(batches, desc="correct mean-grad"):
+        _, grad = loss_grad_fn(params, array_batch(batch))
         total_grad = grad if total_grad is None else add_trees(total_grad, grad)
 
-    return divide_tree(total_grad, float(len(rows)))
+    return divide_tree(total_grad, float(len(batches)))
 
 
 def train_wrong_epoch(
-    model: Any,
-    tok: AutoTokenizer,
     params: Any,
-    rows: list[dict[str, Any]],
-    optimizer: optax.GradientTransformation,
+    batches: list[dict[str, Any]],
     opt_state: optax.OptState,
     reference_grads: Any | None,
-    mask_stage: MaskStage,
+    train_step_fn: Any,
     desc: str,
 ) -> tuple[Any, optax.OptState, float]:
-    if not rows:
+    if not batches:
         raise ValueError("wrong rows are empty")
 
     loss_sum = 0.0
-    loss_grad_fn = jax.value_and_grad(lambda p, row: loss_for_row(model, tok, p, row))
 
-    for row in tqdm(rows, desc=desc):
-        loss, grads = loss_grad_fn(params, row)
+    for batch in tqdm(batches, desc=desc):
+        params, opt_state, loss = train_step_fn(params, opt_state, array_batch(batch), reference_grads)
+        loss_sum += float(loss)
+
+    return params, opt_state, loss_sum / len(batches)
+
+
+def predict_abcd(predict_logits_fn: Any, params: Any, batch: dict[str, Any], cand_ids: np.ndarray) -> str:
+    logits = np.asarray(predict_logits_fn(params, batch))
+    return "ABCD"[int(np.argmax(logits[cand_ids]))]
+
+
+def infer_and_dump(
+    predict_logits_fn: Any,
+    params: Any,
+    batches: list[dict[str, Any]],
+    cand_ids: np.ndarray,
+    path: str,
+    desc: str,
+) -> int:
+    ok = 0
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for batch in tqdm(batches, desc=desc):
+            pred = predict_abcd(predict_logits_fn, params, array_batch(batch), cand_ids)
+            ok += int(pred == batch["label"])
+            f.write(json.dumps({
+                "label": batch["label"],
+                "predict_label": pred,
+                "question": batch["question"],
+            }, ensure_ascii=False) + "\n")
+    return ok
+
+
+def make_train_step(
+    model: Any,
+    optimizer: optax.GradientTransformation,
+    mask_stage: MaskStage,
+) -> Any:
+    def step(
+        params: Any,
+        opt_state: optax.OptState,
+        batch: dict[str, jax.Array],
+        reference_grads: Any | None,
+    ) -> tuple[Any, optax.OptState, jax.Array]:
+        loss, grads = jax.value_and_grad(lambda p: loss_for_batch(model, p, batch))(params)
         params, opt_state, _ = cnl_optax_step(
             params,
             grads,
@@ -185,39 +274,64 @@ def train_wrong_epoch(
             opt_state,
             mask_stage=mask_stage,
         )
-        loss_sum += float(loss)
+        return params, opt_state, loss
 
-    return params, opt_state, loss_sum / len(rows)
-
-
-def predict_abcd(model: Any, tok: AutoTokenizer, params: Any, row: dict[str, Any], cand_ids: np.ndarray) -> str:
-    inputs = build_inputs(tok, row["question"])
-    outputs = model(**inputs, params=params, train=False)
-    logits = np.asarray(outputs.logits[:, -1, :][0])
-    return "ABCD"[int(np.argmax(logits[cand_ids]))]
+    return jax.jit(step)
 
 
-def infer_and_dump(
-    model: Any,
-    tok: AutoTokenizer,
-    params: Any,
-    rows: list[dict[str, Any]],
-    cand_ids: np.ndarray,
-    path: str,
-    desc: str,
-) -> int:
-    ok = 0
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for row in tqdm(rows, desc=desc):
-            pred = predict_abcd(model, tok, params, row, cand_ids)
-            ok += int(pred == row["label"])
-            f.write(json.dumps({
-                "label": row["label"],
-                "predict_label": pred,
-                "question": row["question"],
-            }, ensure_ascii=False) + "\n")
-    return ok
+def make_plain_train_step(model: Any, optimizer: optax.GradientTransformation) -> Any:
+    def step(
+        params: Any,
+        opt_state: optax.OptState,
+        batch: dict[str, jax.Array],
+        reference_grads: Any | None,
+    ) -> tuple[Any, optax.OptState, jax.Array]:
+        del reference_grads
+        loss, grads = jax.value_and_grad(lambda p: loss_for_batch(model, p, batch))(params)
+        updates, opt_state = optimizer.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss
+
+    return jax.jit(step)
+
+
+def maybe_init_wandb(args: argparse.Namespace, wrong_rows: int, correct_rows: int) -> Any | None:
+    if not args.wandb_project:
+        return None
+
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError(
+            "wandb logging was requested, but wandb is not installed. "
+            "Install it with: uv pip install wandb"
+        ) from exc
+
+    if args.wandb_mode:
+        os.environ["WANDB_MODE"] = args.wandb_mode
+
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        config={
+            "model_name": args.model_name,
+            "wrong_jsonl": args.wrong_jsonl,
+            "correct_jsonl": args.correct_jsonl,
+            "out_dir": args.out_dir,
+            "lr": args.lr,
+            "epochs": args.epochs,
+            "use_freeze": bool(args.use_freeze),
+            "optimizer": args.optimizer,
+            "mask_stage": args.mask_stage,
+            "max_wrong": args.max_wrong,
+            "max_correct": args.max_correct,
+            "max_length": args.max_length,
+            "wrong_rows": wrong_rows,
+            "correct_rows": correct_rows,
+            "jax_devices": len(jax.devices()),
+        },
+    )
 
 
 def main() -> None:
@@ -230,6 +344,7 @@ def main() -> None:
         args.model_name,
         trust_remote_code=args.trust_remote_code,
     )
+    ensure_pad_token(tok)
     model = FlaxAutoModelForCausalLM.from_pretrained(
         args.model_name,
         from_pt=args.from_pt,
@@ -244,9 +359,30 @@ def main() -> None:
     if args.max_correct is not None:
         correct_rows = correct_rows[:args.max_correct]
     cand_ids = candidate_ids(tok)
+    wrong_batches = tokenize_rows(tok, wrong_rows, args.max_length, "tokenize wrong")
+    correct_batches = tokenize_rows(tok, correct_rows, args.max_length, "tokenize correct")
+    wandb_run = maybe_init_wandb(args, len(wrong_rows), len(correct_rows))
 
     optimizer = make_optimizer(args.optimizer, args.lr)
     opt_state = optimizer.init(params)
+    loss_grad_fn = jax.jit(jax.value_and_grad(lambda p, batch: loss_for_batch(model, p, batch)))
+    train_step_fn = (
+        make_train_step(model, optimizer, args.mask_stage)
+        if args.use_freeze
+        else make_plain_train_step(model, optimizer)
+    )
+    predict_logits_fn = jax.jit(
+        lambda p, batch: model(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            params=p,
+            train=False,
+        ).logits[
+            0,
+            jnp.sum(batch["attention_mask"][0]) - 1,
+            :,
+        ]
+    )
 
     header = ["epoch", "train_avg_loss", "wrong_to_correct", "correct_to_wrong"]
     summary_csv = os.path.join(args.out_dir, "summary.csv")
@@ -259,40 +395,43 @@ def main() -> None:
     print("USE_FREEZE:", bool(args.use_freeze))
     print("OPTIMIZER:", args.optimizer)
     print("MASK_STAGE:", args.mask_stage)
+    print("MAX_LENGTH:", args.max_length)
+    print("WRONG_ROWS:", len(wrong_rows))
+    print("CORRECT_ROWS:", len(correct_rows))
 
     for ep in range(1, args.epochs + 1):
         print(f"\n===== Epoch {ep} =====")
 
         reference_grads = None
         if args.use_freeze:
-            reference_grads = mean_grad_correct(model, tok, params, correct_rows)
+            reference_grads = mean_grad_correct(
+                model,
+                params,
+                correct_batches,
+                loss_grad_fn,
+            )
 
         params, opt_state, train_loss = train_wrong_epoch(
-            model,
-            tok,
             params,
-            wrong_rows,
-            optimizer,
+            wrong_batches,
             opt_state,
             reference_grads,
-            args.mask_stage,
+            train_step_fn,
             desc=f"train wrong ep{ep}",
         )
 
         w_ok = infer_and_dump(
-            model,
-            tok,
+            predict_logits_fn,
             params,
-            wrong_rows,
+            wrong_batches,
             cand_ids,
             os.path.join(jsonl_dir, f"infer_wrong_ep{ep}.jsonl"),
             f"infer wrong ep{ep}",
         )
         c_ok = infer_and_dump(
-            model,
-            tok,
+            predict_logits_fn,
             params,
-            correct_rows,
+            correct_batches,
             cand_ids,
             os.path.join(jsonl_dir, f"infer_correct_ep{ep}.jsonl"),
             f"infer correct ep{ep}",
@@ -308,9 +447,21 @@ def main() -> None:
             },
             header,
         )
+        if wandb_run is not None:
+            wandb_run.log({
+                "epoch": ep,
+                "train_avg_loss": train_loss,
+                "wrong_to_correct": w_ok,
+                "correct_to_wrong": len(correct_rows) - c_ok,
+                "wrong_accuracy": w_ok / len(wrong_rows) if wrong_rows else 0.0,
+                "correct_accuracy": c_ok / len(correct_rows) if correct_rows else 0.0,
+                "forgetting_rate": (len(correct_rows) - c_ok) / len(correct_rows) if correct_rows else 0.0,
+            }, step=ep)
 
     model.save_pretrained(os.path.join(args.out_dir, "model"), params=params)
     tok.save_pretrained(os.path.join(args.out_dir, "model"))
+    if wandb_run is not None:
+        wandb_run.finish()
     print("Done.")
 
 

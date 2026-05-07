@@ -91,6 +91,18 @@ python jax_sft/sft_optax.py \
   --max_wrong 4
 ```
 
+The runner pads/truncates prompts to a static `--max_length` and jit-compiles
+the per-sample gradient/update path. This is intended to validate correctness on
+TPU. It still uses one sample at a time and does not yet shard parameters or
+batches across all TPU devices.
+
+To log epoch metrics to W&B, add:
+
+```bash
+--wandb_project cnl-repro \
+--wandb_run_name smoke-gpt2-csqa-cnl
+```
+
 If you only have PyTorch weights for a model with a compatible Flax
 architecture, add:
 
