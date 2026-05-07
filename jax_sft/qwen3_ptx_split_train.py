@@ -253,6 +253,51 @@ def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> 
     )
 
 
+def build_metrics(
+    epoch: int,
+    train_loss: float | str,
+    wrong_ok: int,
+    correct_ok: int,
+    n_wrong: int,
+    n_correct: int,
+) -> dict[str, Any]:
+    correct_to_wrong = n_correct - correct_ok
+    wrong_accuracy = wrong_ok / n_wrong if n_wrong else 0.0
+    correct_accuracy = correct_ok / n_correct if n_correct else 0.0
+    forgetting_rate = correct_to_wrong / n_correct if n_correct else 0.0
+    return {
+        "epoch": epoch,
+        "train_avg_loss": train_loss,
+        "wrong_to_correct": wrong_ok,
+        "correct_to_wrong": correct_to_wrong,
+        "wrong_accuracy": wrong_accuracy,
+        "correct_accuracy": correct_accuracy,
+        "forgetting_rate": forgetting_rate,
+        "learning_rate": wrong_accuracy,
+        "retention_rate": correct_accuracy,
+        "n_wrong": n_wrong,
+        "n_correct": n_correct,
+    }
+
+
+def update_wandb_summary(wandb_run: Any | None, metrics: dict[str, Any]) -> None:
+    if wandb_run is None:
+        return
+    for key, value in metrics.items():
+        if value == "":
+            continue
+        wandb_run.summary[key] = value
+        wandb_run.summary[f"final/{key}"] = value
+
+
+def save_final_summary(out_dir: str, metrics: dict[str, Any]) -> None:
+    path = Path(out_dir) / "final_summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
 def main() -> None:
     args = parse_args()
     if args.ptx_dir:
@@ -340,17 +385,30 @@ def main() -> None:
     jsonl_dir = Path(args.out_dir) / "jsonl"
     jsonl_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = str(Path(args.out_dir) / "summary.csv")
-    header = ["epoch", "train_avg_loss", "wrong_to_correct", "correct_to_wrong"]
+    header = [
+        "epoch",
+        "train_avg_loss",
+        "wrong_to_correct",
+        "correct_to_wrong",
+        "wrong_accuracy",
+        "correct_accuracy",
+        "forgetting_rate",
+        "learning_rate",
+        "retention_rate",
+        "n_wrong",
+        "n_correct",
+    ]
     wandb_run = maybe_init_wandb(args, len(wrong_batches), len(correct_batches))
+    final_metrics = None
 
     if args.eval_before_train:
         print("\n===== Epoch 0 (before training) =====")
         w0 = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_wrong_ep0.jsonl"), "infer wrong ep0")
         c0 = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_correct_ep0.jsonl"), "infer correct ep0")
-        row = {"epoch": 0, "train_avg_loss": "", "wrong_to_correct": w0, "correct_to_wrong": len(correct_batches) - c0}
-        append_csv(summary_csv, row, header)
+        metrics = build_metrics(0, "", w0, c0, len(wrong_batches), len(correct_batches))
+        append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
-            wandb_run.log(row | {"wrong_accuracy": w0 / len(wrong_batches), "correct_accuracy": c0 / len(correct_batches)}, step=0)
+            wandb_run.log(metrics, step=0)
 
     for ep in range(1, args.epochs + 1):
         print(f"\n===== Epoch {ep} =====")
@@ -362,20 +420,19 @@ def main() -> None:
         train_loss = loss_sum / len(wrong_batches)
         w_ok = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_wrong_ep{ep}.jsonl"), f"infer wrong ep{ep}")
         c_ok = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_correct_ep{ep}.jsonl"), f"infer correct ep{ep}")
-        row = {"epoch": ep, "train_avg_loss": train_loss, "wrong_to_correct": w_ok, "correct_to_wrong": len(correct_batches) - c_ok}
-        append_csv(summary_csv, row, header)
+        metrics = build_metrics(ep, train_loss, w_ok, c_ok, len(wrong_batches), len(correct_batches))
+        append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
-            wandb_run.log(
-                row | {
-                    "wrong_accuracy": w_ok / len(wrong_batches),
-                    "correct_accuracy": c_ok / len(correct_batches),
-                    "forgetting_rate": (len(correct_batches) - c_ok) / len(correct_batches),
-                },
-                step=ep,
-            )
+            wandb_run.log(metrics, step=ep)
+        final_metrics = metrics
 
     if wandb_run is not None:
+        if final_metrics is not None:
+            update_wandb_summary(wandb_run, final_metrics)
+            save_final_summary(args.out_dir, final_metrics)
         wandb_run.finish()
+    elif final_metrics is not None:
+        save_final_summary(args.out_dir, final_metrics)
     print("Done.")
 
 
