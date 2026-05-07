@@ -62,8 +62,9 @@ For Qwen3-0.6B, the intended one-command pipeline is:
 bash jax_sft/run_qwen3_0_6b_split_train.sh csqa
 ```
 
-By default this uses the local `ptx` repo's JAX Qwen3 backend. Set `PTX_DIR`
-if it is not at `~/ptx`.
+By default this uses the vendored `jax_sft/ptx_backend/qwen.py` Qwen3 JAX
+backend. Set `PTX_DIR=/path/to/ptx` only if you want to override it with an
+external PTX checkout.
 
 Useful overrides:
 

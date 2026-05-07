@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Qwen3 CNL split+train using the local ptx JAX Qwen backend.
+"""Qwen3 CNL split+train using a vendored ptx JAX Qwen backend.
 
 This bypasses Hugging Face FlaxAuto, which does not provide Qwen3 causal-LM
-classes. It expects the sibling/local ptx repo to provide models/qwen.py.
+classes. By default it uses ``jax_sft.ptx_backend.qwen``. Pass ``--ptx_dir`` to
+override this with an external ptx checkout.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from jax_sft.cnl import add_trees, cnl_optax_step, divide_tree
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--ptx_dir", type=str, default="~/ptx")
+    p.add_argument("--ptx_dir", type=str, default=None)
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3-0.6B")
     p.add_argument("--weights_dir", type=str, default="~/weights")
     p.add_argument("--source_jsonl", type=str, nargs="+", required=True)
@@ -242,14 +243,19 @@ def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> 
 
 def main() -> None:
     args = parse_args()
-    ptx_dir = Path(args.ptx_dir).expanduser()
-    sys.path.insert(0, str(ptx_dir))
-    from models import qwen
+    if args.ptx_dir:
+        ptx_dir = Path(args.ptx_dir).expanduser()
+        sys.path.insert(0, str(ptx_dir))
+        from models import qwen
+        backend = str(ptx_dir)
+    else:
+        from jax_sft.ptx_backend import qwen
+        backend = "vendored:jax_sft.ptx_backend.qwen"
 
     tp_size = args.tp_size or jax.device_count()
     print("JAX devices:", jax.devices())
     print("MODEL:", args.model_name)
-    print("PTX_DIR:", ptx_dir)
+    print("QWEN_BACKEND:", backend)
     print("TP_SIZE:", tp_size)
 
     model = qwen.load(

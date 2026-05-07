@@ -6,7 +6,7 @@ set -euo pipefail
 # Defaults target Qwen3-0.6B:
 #   MODEL_NAME=Qwen/Qwen3-0.6B
 #
-# By default this wrapper uses the local ptx Qwen3 JAX backend instead of
+# By default this wrapper uses the vendored ptx Qwen3 JAX backend instead of
 # transformers.FlaxAutoModelForCausalLM, because FlaxAuto does not currently
 # expose Qwen3 causal-LM classes.
 
@@ -14,7 +14,7 @@ DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
 MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 BACKEND="${BACKEND:-ptx}"
-PTX_DIR="${PTX_DIR:-${HOME}/ptx}"
+PTX_DIR="${PTX_DIR:-}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-${HOME}/weights}"
 
 LR="${LR:-1e-7}"
@@ -130,7 +130,6 @@ echo "====================================================="
 
 if [[ "${BACKEND}" == "ptx" ]]; then
   PTX_FLAGS=(
-    --ptx_dir "${PTX_DIR}"
     --weights_dir "${WEIGHTS_DIR}"
     --model_name "${MODEL_NAME}"
     --source_jsonl "${SOURCE_FILES[@]}"
@@ -145,6 +144,9 @@ if [[ "${BACKEND}" == "ptx" ]]; then
     --max_length "${MAX_LENGTH}"
     --eval_before_train "${EVAL_BEFORE_TRAIN}"
   )
+  if [[ -n "${PTX_DIR}" ]]; then
+    PTX_FLAGS+=(--ptx_dir "${PTX_DIR}")
+  fi
   if [[ -n "${MAX_ROWS}" ]]; then
     PTX_FLAGS+=(--max_rows "${MAX_ROWS}")
   fi
