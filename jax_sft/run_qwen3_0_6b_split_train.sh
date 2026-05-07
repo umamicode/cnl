@@ -6,16 +6,16 @@ set -euo pipefail
 # Defaults target Qwen3-0.6B:
 #   MODEL_NAME=Qwen/Qwen3-0.6B
 #
-# Important: this wrapper uses jax_sft/infer_split_optax.py and
-# jax_sft/sft_optax.py. Those scripts currently load models through
-# transformers.FlaxAutoModelForCausalLM. If your transformers/flax stack does
-# not expose a Flax Qwen3 causal-LM implementation, this script will stop at
-# the model-loading step. In that case, wire jax_sft/cnl.py into a Qwen3-capable
-# JAX backend such as EasyDeL or MaxText, then keep this pipeline shape.
+# By default this wrapper uses the local ptx Qwen3 JAX backend instead of
+# transformers.FlaxAutoModelForCausalLM, because FlaxAuto does not currently
+# expose Qwen3 causal-LM classes.
 
 DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
 MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
+BACKEND="${BACKEND:-ptx}"
+PTX_DIR="${PTX_DIR:-${HOME}/ptx}"
+WEIGHTS_DIR="${WEIGHTS_DIR:-${HOME}/weights}"
 
 LR="${LR:-1e-7}"
 EPOCHS="${EPOCHS:-1}"
@@ -115,6 +115,7 @@ echo "================ Qwen3 Split + Train ================"
 echo "DATASET       : ${DATASET}"
 echo "MODEL_NAME    : ${MODEL_NAME}"
 echo "MODEL_TAG     : ${MODEL_TAG}"
+echo "BACKEND       : ${BACKEND}"
 echo "SOURCE_JSONLS : ${SOURCE_FILES[*]}"
 echo "OUT_CORRECT   : ${OUT_CORRECT}"
 echo "OUT_WRONG     : ${OUT_WRONG}"
@@ -127,8 +128,46 @@ echo "MASK_STAGE    : ${MASK_STAGE}"
 echo "MAX_LENGTH    : ${MAX_LENGTH}"
 echo "====================================================="
 
-python jax_sft/infer_split_optax.py "${SPLIT_FLAGS[@]}"
-python jax_sft/sft_optax.py "${TRAIN_FLAGS[@]}"
+if [[ "${BACKEND}" == "ptx" ]]; then
+  PTX_FLAGS=(
+    --ptx_dir "${PTX_DIR}"
+    --weights_dir "${WEIGHTS_DIR}"
+    --model_name "${MODEL_NAME}"
+    --source_jsonl "${SOURCE_FILES[@]}"
+    --out_correct_jsonl "${OUT_CORRECT}"
+    --out_wrong_jsonl "${OUT_WRONG}"
+    --out_dir "${OUT_DIR}"
+    --optimizer "${OPTIMIZER}"
+    --lr "${LR}"
+    --epochs "${EPOCHS}"
+    --use_freeze "${USE_FREEZE}"
+    --mask_stage "${MASK_STAGE}"
+    --max_length "${MAX_LENGTH}"
+    --eval_before_train "${EVAL_BEFORE_TRAIN}"
+  )
+  if [[ -n "${MAX_ROWS}" ]]; then
+    PTX_FLAGS+=(--max_rows "${MAX_ROWS}")
+  fi
+  if [[ -n "${MAX_WRONG}" ]]; then
+    PTX_FLAGS+=(--max_wrong "${MAX_WRONG}")
+  fi
+  if [[ -n "${MAX_CORRECT}" ]]; then
+    PTX_FLAGS+=(--max_correct "${MAX_CORRECT}")
+  fi
+  if [[ -n "${WANDB_PROJECT}" ]]; then
+    PTX_FLAGS+=(--wandb_project "${WANDB_PROJECT}" --wandb_run_name "${WANDB_RUN_NAME}")
+  fi
+  if [[ -n "${WANDB_ENTITY}" ]]; then
+    PTX_FLAGS+=(--wandb_entity "${WANDB_ENTITY}")
+  fi
+  if [[ -n "${WANDB_MODE}" ]]; then
+    PTX_FLAGS+=(--wandb_mode "${WANDB_MODE}")
+  fi
+  python jax_sft/qwen3_ptx_split_train.py "${PTX_FLAGS[@]}"
+else
+  python jax_sft/check_flax_auto_backend.py
+  python jax_sft/infer_split_optax.py "${SPLIT_FLAGS[@]}"
+  python jax_sft/sft_optax.py "${TRAIN_FLAGS[@]}"
+fi
 
 echo "Split + train done."
-
