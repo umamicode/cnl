@@ -1,0 +1,7 @@
+jax
+jaxlib
+flax
+optax
+transformers==4.48.0
+tqdm
+numpy

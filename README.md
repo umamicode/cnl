@@ -54,7 +54,8 @@ $$\theta \gets \theta - \eta \cdot \mathbb{I}[s_{\theta}(\mathcal{M}, \mathcal{I
 ├── sft_adamw/              # CNL + AdamW optimizer
 ├── sft_replay/             # Replay baseline (mixed training)
 ├── sft_ood_correct/        # OOD experiment on correct samples
-└── sft_ood_wrong/          # OOD experiment on wrong samples
+├── sft_ood_wrong/          # OOD experiment on wrong samples
+└── jax_sft/                # JAX/Optax CNL primitives and Flax runner
 ```
 
 ## Quick Start
@@ -172,6 +173,16 @@ bash sft/sft_qwen_1.5b.sh mmlu       # MMLU
 - `tqdm==4.67.1`
 - `numpy==2.2.6`
 - `peft==0.12.0`
+
+Optional JAX/Optax path:
+
+```bash
+pip install -r requirements-jax.txt
+```
+
+The JAX runner is in `jax_sft/sft_optax.py`. It defaults to the checked-in CSQA
+correct/wrong split, but still requires a model supported by
+`FlaxAutoModelForCausalLM`.
 
 ## License
 
