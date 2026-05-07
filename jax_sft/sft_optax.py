@@ -99,6 +99,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb_entity", type=str, default=None)
     p.add_argument("--wandb_run_name", type=str, default=None)
     p.add_argument("--wandb_mode", type=str, default=None, help="Examples: online, offline, disabled.")
+    p.add_argument(
+        "--eval_before_train",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Write epoch 0 metrics before any updates.",
+    )
     return p.parse_args()
 
 
@@ -327,6 +334,7 @@ def maybe_init_wandb(args: argparse.Namespace, wrong_rows: int, correct_rows: in
             "max_wrong": args.max_wrong,
             "max_correct": args.max_correct,
             "max_length": args.max_length,
+            "eval_before_train": bool(args.eval_before_train),
             "wrong_rows": wrong_rows,
             "correct_rows": correct_rows,
             "jax_devices": len(jax.devices()),
@@ -398,6 +406,44 @@ def main() -> None:
     print("MAX_LENGTH:", args.max_length)
     print("WRONG_ROWS:", len(wrong_rows))
     print("CORRECT_ROWS:", len(correct_rows))
+
+    if args.eval_before_train:
+        print("\n===== Epoch 0 (before training) =====")
+        w0_ok = infer_and_dump(
+            predict_logits_fn,
+            params,
+            wrong_batches,
+            cand_ids,
+            os.path.join(jsonl_dir, "infer_wrong_ep0.jsonl"),
+            "infer wrong ep0",
+        )
+        c0_ok = infer_and_dump(
+            predict_logits_fn,
+            params,
+            correct_batches,
+            cand_ids,
+            os.path.join(jsonl_dir, "infer_correct_ep0.jsonl"),
+            "infer correct ep0",
+        )
+        append_csv(
+            summary_csv,
+            {
+                "epoch": 0,
+                "train_avg_loss": "",
+                "wrong_to_correct": w0_ok,
+                "correct_to_wrong": len(correct_rows) - c0_ok,
+            },
+            header,
+        )
+        if wandb_run is not None:
+            wandb_run.log({
+                "epoch": 0,
+                "wrong_to_correct": w0_ok,
+                "correct_to_wrong": len(correct_rows) - c0_ok,
+                "wrong_accuracy": w0_ok / len(wrong_rows) if wrong_rows else 0.0,
+                "correct_accuracy": c0_ok / len(correct_rows) if correct_rows else 0.0,
+                "forgetting_rate": (len(correct_rows) - c0_ok) / len(correct_rows) if correct_rows else 0.0,
+            }, step=0)
 
     for ep in range(1, args.epochs + 1):
         print(f"\n===== Epoch {ep} =====")

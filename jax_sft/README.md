@@ -6,6 +6,8 @@ Collaborative Neuron Learning update rule.
 ## What Is Implemented
 
 - `cnl.py`: pure JAX tree utilities for CNL masking.
+- `infer_split_optax.py`: split data into correct/wrong for the exact Flax
+  model you plan to train.
 - `sft_optax.py`: a Flax/Hugging Face SFT runner that mirrors `sft/sft.py`.
 - `requirements-jax.txt`: optional JAX/Flax/Optax dependencies.
 
@@ -38,6 +40,41 @@ Each row is expected to contain:
 ```
 
 `predict_label` is useful for provenance but is not required by the SFT loss.
+
+For valid learning/forgetting metrics, the correct/wrong split must come from
+the same model you train. For example, to make a GPT-2 CSQA split from the
+checked-in Qwen split files:
+
+```bash
+python jax_sft/infer_split_optax.py \
+  --model_name openai-community/gpt2 \
+  --jsonl data/csqa_correct_Qwen2.5-1.5B-Instruct.jsonl data/csqa_wrong_Qwen2.5-1.5B-Instruct.jsonl \
+  --out_correct_jsonl data/csqa_correct_openai-community-gpt2.jsonl \
+  --out_wrong_jsonl data/csqa_wrong_openai-community-gpt2.jsonl \
+  --max_length 256
+```
+
+Then train on those same-model files.
+
+For Qwen3-0.6B, the intended one-command pipeline is:
+
+```bash
+bash jax_sft/run_qwen3_0_6b_split_train.sh csqa
+```
+
+Useful overrides:
+
+```bash
+WANDB_PROJECT=cnl-repro \
+EPOCHS=1 \
+MAX_LENGTH=256 \
+bash jax_sft/run_qwen3_0_6b_split_train.sh csqa
+```
+
+This wrapper defaults to `Qwen/Qwen3-0.6B`, whose Hugging Face model card
+recommends recent `transformers` support for Qwen3. The current Python runner
+uses `FlaxAutoModelForCausalLM`; if that stack cannot load Qwen3, use the same
+pipeline shape with a Qwen3-capable JAX backend such as EasyDeL or MaxText.
 
 ## Install
 
