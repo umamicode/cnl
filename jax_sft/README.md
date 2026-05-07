@@ -48,6 +48,17 @@ pip install -r requirements-jax.txt
 Use the JAX installation command appropriate for your accelerator if you need
 GPU/TPU support.
 
+For a TPU VM using `uv`, include `flax` alongside `jax[tpu]` and `optax`:
+
+```bash
+uv venv ~/.venvs/py312 --python 3.12 -q
+source ~/.venvs/py312/bin/activate
+uv pip install "jax[tpu]" flax optax wandb fire hydra-core omegaconf datasets grain transformers safetensors huggingface-hub zstandard jinja2
+```
+
+The script does not require PyTorch unless you pass `--from_pt` to convert
+PyTorch checkpoints into Flax parameters.
+
 ## Run
 
 Use a model that has a Flax causal-LM implementation in `transformers`:
@@ -81,4 +92,3 @@ be loadable by `FlaxAutoModelForCausalLM`.
 For Qwen/Llama-scale production runs in JAX, the next step is usually to wire
 these `cnl.py` update primitives into a JAX-native model stack such as MaxText,
 EasyLM, or another internal Flax/Linen implementation.
-

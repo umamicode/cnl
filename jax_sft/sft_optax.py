@@ -20,7 +20,21 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from tqdm import tqdm
-from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
+from transformers import AutoTokenizer
+
+try:
+    from transformers import FlaxAutoModelForCausalLM
+except ImportError:
+    try:
+        from transformers.models.auto.modeling_flax_auto import FlaxAutoModelForCausalLM
+    except ImportError as exc:
+        raise ImportError(
+            "FlaxAutoModelForCausalLM is unavailable. Install Flax in this "
+            "environment, for example: uv pip install flax. If you pass --from_pt "
+            "to convert PyTorch weights, install torch as well. If Flax is "
+            "already installed, pin transformers to a version that includes "
+            "Flax model classes, such as transformers==4.48.0."
+        ) from exc
 
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
