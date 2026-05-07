@@ -72,9 +72,12 @@ bash jax_sft/run_qwen3_0_6b_split_train.sh csqa
 ```
 
 This wrapper defaults to `Qwen/Qwen3-0.6B`, whose Hugging Face model card
-recommends recent `transformers` support for Qwen3. The current Python runner
-uses `FlaxAutoModelForCausalLM`; if that stack cannot load Qwen3, use the same
-pipeline shape with a Qwen3-capable JAX backend such as EasyDeL or MaxText.
+requires recent `transformers` support for Qwen3. Use `transformers>=4.51,<5`
+for this runner: 4.51+ recognizes Qwen3 configs, while 5.x no longer exposes
+the Flax auto-model path used here. The current Python runner uses
+`FlaxAutoModelForCausalLM`; if that stack recognizes Qwen3 but cannot load a
+Flax Qwen3 causal LM, use the same pipeline shape with a Qwen3-capable JAX
+backend such as EasyDeL or MaxText.
 
 ## Install
 
@@ -90,7 +93,7 @@ For a TPU VM using `uv`, include `flax` alongside `jax[tpu]` and `optax`:
 ```bash
 uv venv ~/.venvs/py312 --python 3.12 -q
 source ~/.venvs/py312/bin/activate
-uv pip install "jax[tpu]" flax optax wandb fire hydra-core omegaconf datasets grain transformers safetensors huggingface-hub zstandard jinja2
+uv pip install "jax[tpu]" flax optax wandb fire hydra-core omegaconf datasets grain "transformers>=4.51.0,<5" safetensors "huggingface-hub[hf-xet]" zstandard jinja2
 ```
 
 The script does not require PyTorch unless you pass `--from_pt` to convert

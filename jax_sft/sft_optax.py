@@ -32,8 +32,10 @@ except ImportError:
             "FlaxAutoModelForCausalLM is unavailable. Install Flax in this "
             "environment, for example: uv pip install flax. If you pass --from_pt "
             "to convert PyTorch weights, install torch as well. If Flax is "
-            "already installed, pin transformers to a version that includes "
-            "Flax model classes, such as transformers==4.48.0."
+            "already installed, pin transformers to a 4.x version that includes "
+            "Flax model classes. For Qwen3 config support, use: "
+            "uv pip install 'transformers>=4.51.0,<5'. Transformers 5.x does "
+            "not expose the Flax auto-model path used by this runner."
         ) from exc
 
 if __package__ is None or __package__ == "":

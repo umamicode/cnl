@@ -23,8 +23,11 @@ except ImportError:
         from transformers.models.auto.modeling_flax_auto import FlaxAutoModelForCausalLM
     except ImportError as exc:
         raise ImportError(
-            "FlaxAutoModelForCausalLM is unavailable. Install flax, or pin "
-            "transformers to a version with Flax model classes."
+            "FlaxAutoModelForCausalLM is unavailable. Install flax and pin "
+            "transformers to a 4.x version with both Qwen3 config support and "
+            "Flax auto-model classes, for example: "
+            "uv pip install 'transformers>=4.51.0,<5'. Transformers 5.x does "
+            "not expose the Flax auto-model path used by this runner."
         ) from exc
 
 if __package__ is None or __package__ == "":
@@ -138,4 +141,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
