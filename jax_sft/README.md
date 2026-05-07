@@ -75,6 +75,22 @@ python jax_sft/sft_optax.py \
   --use_freeze 1
 ```
 
+For a quick TPU smoke test, cap both splits first:
+
+```bash
+python jax_sft/sft_optax.py \
+  --model_name openai-community/gpt2 \
+  --wrong_jsonl data/csqa_wrong_Qwen2.5-1.5B-Instruct.jsonl \
+  --correct_jsonl data/csqa_correct_Qwen2.5-1.5B-Instruct.jsonl \
+  --out_dir jax_ckpts/smoke_gpt2_cnl \
+  --optimizer sgd \
+  --lr 1e-7 \
+  --epochs 1 \
+  --use_freeze 1 \
+  --max_correct 4 \
+  --max_wrong 4
+```
+
 If you only have PyTorch weights for a model with a compatible Flax
 architecture, add:
 

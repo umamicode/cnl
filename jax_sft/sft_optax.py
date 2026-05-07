@@ -77,6 +77,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Pass trust_remote_code=True to Hugging Face loaders.",
     )
+    p.add_argument(
+        "--max_wrong",
+        type=int,
+        default=None,
+        help="Optional cap for wrong/injection rows, useful for smoke tests.",
+    )
+    p.add_argument(
+        "--max_correct",
+        type=int,
+        default=None,
+        help="Optional cap for correct/mastered rows, useful for smoke tests.",
+    )
     return p.parse_args()
 
 
@@ -122,7 +134,7 @@ def candidate_ids(tok: AutoTokenizer) -> np.ndarray:
 def loss_for_row(model: Any, tok: AutoTokenizer, params: Any, row: dict[str, Any]) -> jax.Array:
     inputs = build_inputs(tok, row["question"])
     labels = label_token_id(tok, row["label"])
-    outputs = model(**inputs, params=params, train=True)
+    outputs = model(**inputs, params=params, train=False)
     logits = outputs.logits[:, -1, :]
     return optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
 
@@ -227,6 +239,10 @@ def main() -> None:
 
     wrong_rows = read_jsonl(args.wrong_jsonl)
     correct_rows = read_jsonl(args.correct_jsonl)
+    if args.max_wrong is not None:
+        wrong_rows = wrong_rows[:args.max_wrong]
+    if args.max_correct is not None:
+        correct_rows = correct_rows[:args.max_correct]
     cand_ids = candidate_ids(tok)
 
     optimizer = make_optimizer(args.optimizer, args.lr)
