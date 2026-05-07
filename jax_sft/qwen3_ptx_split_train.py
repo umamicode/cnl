@@ -153,7 +153,9 @@ def make_optimizer(name: str, lr: float) -> optax.GradientTransformation:
 
 def loss_for_batch(forward: Any, weights: Any, batch: dict[str, jax.Array]) -> jax.Array:
     logits = forward(batch["tokens"], weights)
-    logits = logits[jnp.arange(logits.shape[0]), batch["last_idx"], :]
+    logits = logits.at[jnp.arange(logits.shape[0]), batch["last_idx"], :].get(
+        out_sharding=P("data", "model")
+    )
     logprobs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
     label_logprobs = logprobs.at[jnp.arange(logprobs.shape[0]), batch["label_id"]].get(
         out_sharding=P("data")
