@@ -111,13 +111,96 @@ MAX_CORRECT=256
 optimizer update; `update` masks the final optimizer update direction. SFT
 ignores this setting and is logged as `masknone`.
 
-This wrapper defaults to `Qwen/Qwen3-0.6B`, whose Hugging Face model card
-requires recent `transformers` support for Qwen3. Use `transformers>=4.51,<5`
-for this runner: 4.51+ recognizes Qwen3 configs, while 5.x no longer exposes
-the Flax auto-model path used here. The current Python runner uses
-`FlaxAutoModelForCausalLM`; if that stack recognizes Qwen3 but cannot load a
-Flax Qwen3 causal LM, use the same pipeline shape with a Qwen3-capable JAX
-backend such as EasyDeL or MaxText.
+## Three Experiment Tracks
+
+### 1. Paper-Style CNL Reproduction
+
+This keeps the paper's original experiment shape: split one dataset into
+examples the current model answers correctly and incorrectly, train on the
+wrong/injection set, and use the correct/mastered set for CNL masking.
+
+```bash
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/reproduce_cnl_paper_qwen3_0_6b.sh
+```
+
+Useful smoke version:
+
+```bash
+DATASETS="csqa" \
+METHODS="cnl sft" \
+MAX_ROWS=64 \
+MAX_WRONG=32 \
+MAX_CORRECT=32 \
+EPOCHS=1 \
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/reproduce_cnl_paper_qwen3_0_6b.sh
+```
+
+### 2. Explicit A/B Retention-vs-Injection
+
+This is the continual-learning setting:
+
+```text
+A = old / retained data
+B = new / injection data
+```
+
+The runner logs A/B accuracy and loss before and after training, plus
+`a_drop`, `b_gain`, and `tradeoff_score`.
+
+```bash
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/run_qwen3_0_6b_ab_train.sh csqa medqa
+```
+
+By default, A is filtered to examples the base model currently answers
+correctly (`RETENTION_FILTER=correct`) and B is trained as provided
+(`TRAIN_FILTER=none`). For a paper-like B injection set, use:
+
+```bash
+RETENTION_FILTER=correct \
+TRAIN_FILTER=wrong \
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/run_qwen3_0_6b_ab_train.sh csqa medqa
+```
+
+To compare against plain SFT on B:
+
+```bash
+METHOD=sft \
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/run_qwen3_0_6b_ab_train.sh csqa medqa
+```
+
+### 3. Synthetic A
+
+This creates synthetic retention rows by pseudo-labeling a prompt bank with the
+frozen base model, then uses those rows as A for the A/B runner.
+
+```bash
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/run_qwen3_0_6b_synthetic_a_ab_train.sh csqa medqa
+```
+
+If you still have a real A evaluation set, pass it separately so training uses
+synthetic A but retention is measured on real A:
+
+```bash
+A_EVAL_JSONLS="data/csqa_correct_Qwen2.5-1.5B-Instruct.jsonl data/csqa_wrong_Qwen2.5-1.5B-Instruct.jsonl" \
+WANDB_PROJECT=cnl-repro \
+bash jax_sft/run_qwen3_0_6b_synthetic_a_ab_train.sh csqa medqa
+```
+
+Reference gradient refresh can be tightened with `REF_REFRESH_STEPS`. The
+default `0` means once per epoch. `REF_REFRESH_STEPS=1` is closest to the
+current-gradient assumption but much slower.
+
+The Qwen3 wrappers default to `Qwen/Qwen3-0.6B` and use the vendored
+`jax_sft/ptx_backend/qwen.py` backend, so they do not depend on Hugging Face
+FlaxAuto support for Qwen3. The older `sft_optax.py` and `infer_split_optax.py`
+scripts still use `FlaxAutoModelForCausalLM`; keep those for GPT-2-style smoke
+tests or models with native Flax classes.
 
 ## Install
 
@@ -128,16 +211,14 @@ pip install -r requirements-jax.txt
 Use the JAX installation command appropriate for your accelerator if you need
 GPU/TPU support.
 
-For a TPU VM using `uv`, include `flax` alongside `jax[tpu]` and `optax`:
+For a TPU VM using `uv`, include `optax`, `wandb`, `transformers`,
+`safetensors`, and `huggingface-hub`:
 
 ```bash
 uv venv ~/.venvs/py312 --python 3.12 -q
 source ~/.venvs/py312/bin/activate
 uv pip install "jax[tpu]" flax optax wandb fire hydra-core omegaconf datasets grain "transformers>=4.51.0,<5" safetensors "huggingface-hub[hf-xet]" zstandard jinja2
 ```
-
-The script does not require PyTorch unless you pass `--from_pt` to convert
-PyTorch checkpoints into Flax parameters.
 
 ## Run
 

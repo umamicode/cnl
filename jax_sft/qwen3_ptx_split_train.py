@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-7)
     p.add_argument("--optimizer", choices=["sgd", "adam", "adamw"], default="sgd")
+    p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--use_freeze", type=int, choices=[0, 1], default=1)
     p.add_argument("--mask_stage", choices=["gradient", "update"], default="gradient")
     p.add_argument("--tp_size", type=int, default=None)
@@ -146,13 +147,13 @@ def array_batch(batch: dict[str, Any]) -> dict[str, jax.Array]:
     }
 
 
-def make_optimizer(name: str, lr: float) -> optax.GradientTransformation:
+def make_optimizer(name: str, lr: float, weight_decay: float = 1e-4) -> optax.GradientTransformation:
     if name == "sgd":
         return optax.sgd(lr)
     if name == "adam":
         return optax.adam(lr)
     if name == "adamw":
-        return optax.adamw(lr)
+        return optax.adamw(lr, weight_decay=weight_decay)
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
@@ -359,7 +360,7 @@ def main() -> None:
     if args.max_wrong is not None:
         wrong_batches = wrong_batches[: args.max_wrong]
 
-    optimizer = make_optimizer(args.optimizer, args.lr)
+    optimizer = make_optimizer(args.optimizer, args.lr, weight_decay=args.weight_decay)
     opt_state = optimizer.init(weights)
 
     def train_step(w, state, batch, ref_grads):
