@@ -139,7 +139,8 @@ bash jax_sft/reproduce_cnl_paper_qwen3_0_6b.sh
 
 ### 2. Explicit A/B Retention-vs-Injection
 
-This is the continual-learning setting:
+This is a fast retention-vs-injection setting where the base model is treated
+as already having some A capability:
 
 ```text
 A = old / retained data
@@ -173,7 +174,78 @@ WANDB_PROJECT=cnl-repro \
 bash jax_sft/run_qwen3_0_6b_ab_train.sh csqa medqa
 ```
 
-### 3. Synthetic A
+### 3. Practical Train-A-Then-B
+
+This is the cleaner continual-learning setting:
+
+```text
+1. Train the base model on A with normal SFT.
+2. Treat the resulting model as the old-task model.
+3. Train on B with CNL or SFT.
+4. Measure A drop from after-A and B gain from before-B.
+```
+
+```bash
+WANDB_PROJECT=cnl-practical \
+bash jax_sft/run_qwen3_0_6b_train_a_then_b.sh csqa medqa
+```
+
+Plain SFT baseline for the B stage:
+
+```bash
+B_METHOD=sft \
+WANDB_PROJECT=cnl-practical \
+bash jax_sft/run_qwen3_0_6b_train_a_then_b.sh csqa medqa
+```
+
+Recommended first sweep around the promising paper-style region:
+
+```bash
+A_EPOCHS=1 \
+B_EPOCHS=3 \
+A_LR=1e-6 \
+B_LR=1e-6 \
+A_OPTIMIZER=adamw \
+B_OPTIMIZER=adamw \
+MASK_STAGE=update \
+WANDB_PROJECT=cnl-practical \
+bash jax_sft/run_qwen3_0_6b_train_a_then_b.sh csqa medqa
+```
+
+Three-way practical sweep:
+
+```bash
+METHODS="sft cnl cnl_synth" \
+A_LRS="1e-6" \
+B_LRS="5e-7 1e-6 2e-6" \
+A_EPOCHS_LIST="1" \
+B_EPOCHS_LIST="1 2 3" \
+A_OPTIMIZERS="adamw" \
+B_OPTIMIZERS="adamw" \
+MASK_STAGES="update" \
+WANDB_PROJECT=cnl-practical \
+bash jax_sft/sweep_qwen3_0_6b_train_a_then_b.sh csqa medqa
+```
+
+The sweep methods are:
+
+```text
+sft       = train on A, then plain finetune on B
+cnl       = train on A, then CNL on B using real A as B-stage retention data
+cnl_synth = train on A, generate synthetic A from the A-trained model,
+            then CNL on B using synthetic A as B-stage retention data
+```
+
+For the synthetic-A variant of this practical setting, train on real A first
+but use synthetic A only as the B-stage CNL reference data:
+
+```bash
+B_RETENTION_JSONLS="data/synthetic/csqa_syntheticA_Qwen_Qwen3-0.6B_argmax_n512.jsonl" \
+WANDB_PROJECT=cnl-practical \
+bash jax_sft/run_qwen3_0_6b_train_a_then_b.sh csqa medqa
+```
+
+### 4. Synthetic A
 
 This creates synthetic retention rows by pseudo-labeling a prompt bank with the
 frozen base model, then uses those rows as A for the A/B runner.
