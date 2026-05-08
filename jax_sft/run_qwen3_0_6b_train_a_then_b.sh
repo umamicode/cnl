@@ -125,7 +125,7 @@ echo "MASK_STAGE        : ${MASK_STAGE}"
 echo "B_RETENTION_FILTER: ${B_RETENTION_FILTER}"
 echo "B_TRAIN_FILTER    : ${B_TRAIN_FILTER}"
 echo "SYNTHETIC_B_RET   : ${SYNTHETIC_B_RETENTION}"
-if [[ "${#SYNTHETIC_SOURCE_FILES[@]}" -gt 0 ]]; then
+if [[ -n "${SYNTHETIC_SOURCE_JSONLS:-}" ]]; then
   echo "SYNTH_SOURCE_JSONLS: ${SYNTHETIC_SOURCE_FILES[*]}"
 fi
 echo "REF_REFRESH_STEPS : ${REF_REFRESH_STEPS}"
@@ -183,7 +183,7 @@ fi
 if [[ -n "${SYNTHETIC_MAX_ROWS}" ]]; then
   FLAGS+=(--synthetic_max_rows "${SYNTHETIC_MAX_ROWS}")
 fi
-if [[ "${#SYNTHETIC_SOURCE_FILES[@]}" -gt 0 ]]; then
+if [[ -n "${SYNTHETIC_SOURCE_JSONLS:-}" ]]; then
   FLAGS+=(--synthetic_source_jsonl "${SYNTHETIC_SOURCE_FILES[@]}")
 fi
 if [[ -n "${WANDB_PROJECT}" ]]; then
