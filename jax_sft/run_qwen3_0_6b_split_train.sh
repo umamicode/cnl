@@ -36,6 +36,8 @@ SKIP_SPLIT="${SKIP_SPLIT:-0}"
 MAX_ROWS="${MAX_ROWS:-}"
 MAX_WRONG="${MAX_WRONG:-}"
 MAX_CORRECT="${MAX_CORRECT:-}"
+CORRECT_RATIO="${CORRECT_RATIO:-100}"
+CORRECT_SEED="${CORRECT_SEED:-0}"
 
 # Optional W&B settings.
 WANDB_PROJECT="${WANDB_PROJECT:-}"
@@ -130,6 +132,8 @@ echo "WEIGHT_DECAY  : ${WEIGHT_DECAY}"
 echo "MASK_STAGE    : ${MASK_STAGE}"
 echo "MAX_LENGTH    : ${MAX_LENGTH}"
 echo "SKIP_SPLIT    : ${SKIP_SPLIT}"
+echo "CORRECT_RATIO : ${CORRECT_RATIO}"
+echo "CORRECT_SEED  : ${CORRECT_SEED}"
 echo "====================================================="
 
 if [[ "${BACKEND}" == "ptx" ]]; then
@@ -148,6 +152,8 @@ if [[ "${BACKEND}" == "ptx" ]]; then
     --mask_stage "${MASK_STAGE}"
     --max_length "${MAX_LENGTH}"
     --eval_before_train "${EVAL_BEFORE_TRAIN}"
+    --correct_ratio "${CORRECT_RATIO}"
+    --correct_seed "${CORRECT_SEED}"
   )
   if [[ -n "${PTX_DIR}" ]]; then
     PTX_FLAGS+=(--ptx_dir "${PTX_DIR}")

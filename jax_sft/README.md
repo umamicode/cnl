@@ -137,6 +137,20 @@ WANDB_PROJECT=cnl-repro \
 bash jax_sft/reproduce_cnl_paper_qwen3_0_6b.sh
 ```
 
+Correct/mastered-data ratio sweep:
+
+```bash
+DATASETS="csqa" \
+CORRECT_RATIOS="10 20 40 60 80 100" \
+CORRECT_SEEDS="0" \
+WANDB_PROJECT=cnl-repro-correct-ratio \
+bash jax_sft/sweep_qwen3_0_6b_correct_ratio.sh
+```
+
+This keeps the paper-style setup fixed and only changes how much of the
+initially-correct set CNL can use. SFT runs once per hyperparameter setting by
+default because `CORRECT_RATIO` is unused when CNL is disabled.
+
 ### 2. Explicit A/B Retention-vs-Injection
 
 This is a fast retention-vs-injection setting where the base model is treated
@@ -235,6 +249,23 @@ cnl       = train on A, then CNL on B using real A as B-stage retention data
 cnl_synth = train on A, generate synthetic A from the A-trained model,
             then CNL on B using synthetic A as B-stage retention data
 ```
+
+Real-A retention ratio sweep:
+
+```bash
+METHODS="sft cnl" \
+A_RETENTION_RATIOS="10 20 40 60 80 100" \
+A_RETENTION_SEEDS="0" \
+A_EPOCHS_LIST="3" \
+LR_GRID="1e-8 2e-8 5e-8 1e-7 2e-7 5e-7 1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4 2e-4 5e-4 1e-3" \
+WANDB_PROJECT=cnl-practical-a-ratio \
+bash jax_sft/sweep_qwen3_0_6b_a_ratio_train_a_then_b.sh csqa medqa
+```
+
+`A_RETENTION_RATIOS` controls the random subset of real A used only for the
+B-stage CNL reference gradient. Stage A still trains on A first. SFT runs once
+per hyperparameter setting by default; set `RUN_SFT_PER_RATIO=1` if you want
+duplicate SFT points for each ratio.
 
 For the synthetic-A variant of this practical setting, train on real A first
 but use synthetic A only as the B-stage CNL reference data:

@@ -95,6 +95,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_a_eval", type=int, default=None)
     p.add_argument("--max_b_eval", type=int, default=None)
     p.add_argument("--max_b_retention", type=int, default=None)
+    p.add_argument(
+        "--b_retention_ratio",
+        type=float,
+        default=1.0,
+        help="Random fraction of B-stage A-retention rows to keep. Values >1 are interpreted as percentages.",
+    )
+    p.add_argument("--b_retention_seed", type=int, default=0)
 
     p.add_argument("--a_epochs", type=int, default=1)
     p.add_argument("--a_lr", type=float, default=1e-7)
@@ -146,7 +153,14 @@ def maybe_init_wandb(args: argparse.Namespace, counts: dict[str, int]) -> Any | 
         project=args.wandb_project,
         entity=args.wandb_entity,
         name=args.wandb_run_name,
-        config={**vars(args), **counts, "jax_devices": len(jax.devices())},
+        config={
+            **vars(args),
+            **counts,
+            "method": "cnl_synth"
+            if args.b_method == "cnl" and args.synthetic_b_retention
+            else args.b_method,
+            "jax_devices": len(jax.devices()),
+        },
     )
 
 
@@ -155,6 +169,25 @@ def write_stage_json(path: str, metrics: dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
         f.write("\n")
+
+
+def normalize_ratio(ratio: float) -> float:
+    ratio = ratio / 100.0 if ratio > 1 else ratio
+    if ratio <= 0 or ratio > 1:
+        raise ValueError(f"ratio must be in (0, 1] or (0, 100], got {ratio}")
+    return ratio
+
+
+def random_subset_rows(rows: list[dict[str, Any]], ratio: float, seed: int, desc: str) -> list[dict[str, Any]]:
+    ratio = normalize_ratio(ratio)
+    if ratio >= 1 or not rows:
+        print(f"{desc}: ratio=1.0 kept={len(rows)}/{len(rows)}")
+        return rows
+    n_keep = max(1, int(round(len(rows) * ratio)))
+    rng = np.random.default_rng(seed)
+    indices = sorted(rng.choice(len(rows), size=n_keep, replace=False).tolist())
+    print(f"{desc}: ratio={ratio:.4f} seed={seed} kept={n_keep}/{len(rows)}")
+    return [rows[i] for i in indices]
 
 
 def stable_softmax(x: np.ndarray) -> np.ndarray:
@@ -333,6 +366,16 @@ def main() -> None:
     summary_csv = str(Path(args.out_dir) / "summary.csv")
     header = [
         "stage",
+        "method",
+        "b_method",
+        "synthetic_b_retention",
+        "b_retention_ratio",
+        "b_retention_seed",
+        "a_lr",
+        "b_lr",
+        "a_optimizer",
+        "b_optimizer",
+        "mask_stage",
         "global_step",
         "a_epoch",
         "b_epoch",
@@ -362,6 +405,7 @@ def main() -> None:
     b_eval_rows = load_jsonl(args.b_eval_jsonl or args.b_train_jsonl, None)
     b_retention_rows = [] if args.synthetic_b_retention else load_jsonl(b_retention_paths, None)
     synthetic_source_rows = load_jsonl(synthetic_source_paths, None) if args.synthetic_b_retention else []
+    b_retention_ratio = normalize_ratio(args.b_retention_ratio)
 
     a_train_batches = tokenize_batches(a_train_rows, model.tokenizer, args.max_length, args.max_a_train, "tokenize A train")
     a_eval_batches = tokenize_batches(a_eval_rows, model.tokenizer, args.max_length, args.max_a_eval, "tokenize A eval")
@@ -377,8 +421,11 @@ def main() -> None:
         "a_train_rows": len(a_train_batches),
         "a_eval_rows": len(a_eval_batches),
         "b_eval_rows": len(b_eval_batches),
+        "b_retention_ratio": b_retention_ratio,
+        "b_retention_seed": args.b_retention_seed,
     }
     wandb_run = maybe_init_wandb(args, counts)
+    method = "cnl_synth" if args.b_method == "cnl" and args.synthetic_b_retention else args.b_method
 
     def evaluate(stage: str, global_step: int, a_epoch: int, b_epoch: int, train_avg_loss: float | str) -> dict[str, Any]:
         a_ok = infer_batches(
@@ -399,7 +446,7 @@ def main() -> None:
         )
         a_loss = eval_loss_batches(weights, a_eval_batches, loss_fn, f"loss A {stage}")
         b_loss = eval_loss_batches(weights, b_eval_batches, loss_fn, f"loss B {stage}")
-        return build_metrics(
+        metrics = build_metrics(
             stage=stage,
             global_step=global_step,
             a_epoch=a_epoch,
@@ -416,6 +463,21 @@ def main() -> None:
             a_after_a_loss=a_after_a_loss,
             b_before_b_loss=b_before_b_loss,
         )
+        metrics.update(
+            {
+                "method": method,
+                "b_method": args.b_method,
+                "synthetic_b_retention": args.synthetic_b_retention,
+                "b_retention_ratio": b_retention_ratio,
+                "b_retention_seed": args.b_retention_seed,
+                "a_lr": args.a_lr,
+                "b_lr": args.b_lr,
+                "a_optimizer": args.a_optimizer,
+                "b_optimizer": args.b_optimizer,
+                "mask_stage": args.mask_stage if args.b_method == "cnl" else "none",
+            }
+        )
+        return metrics
 
     a_after_a_acc = None
     b_before_b_acc = None
@@ -498,6 +560,15 @@ def main() -> None:
             min_confidence=args.synthetic_min_confidence,
             seed=args.synthetic_seed,
             out_jsonl=str(jsonl_dir / "synthetic_b_retention_after_a.jsonl"),
+        )
+    else:
+        if args.max_b_retention is not None:
+            b_retention_rows = b_retention_rows[: args.max_b_retention]
+        b_retention_rows = random_subset_rows(
+            b_retention_rows,
+            b_retention_ratio,
+            args.b_retention_seed,
+            "subset B-stage A-retention rows",
         )
     b_train_batches = filter_batches(
         b_train_rows,

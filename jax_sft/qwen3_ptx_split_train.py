@@ -48,6 +48,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_rows", type=int, default=None)
     p.add_argument("--max_wrong", type=int, default=None)
     p.add_argument("--max_correct", type=int, default=None)
+    p.add_argument(
+        "--correct_ratio",
+        type=float,
+        default=1.0,
+        help="Random fraction of correct/mastered rows to keep. Values >1 are interpreted as percentages.",
+    )
+    p.add_argument("--correct_seed", type=int, default=0)
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-7)
     p.add_argument("--optimizer", choices=["sgd", "adam", "adamw"], default="sgd")
@@ -85,6 +92,25 @@ def load_jsonl(paths: list[str], max_rows: int | None) -> list[dict[str, Any]]:
 
 def write_jsonl_line(f, row: dict[str, Any]) -> None:
     f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def normalize_ratio(ratio: float) -> float:
+    ratio = ratio / 100.0 if ratio > 1 else ratio
+    if ratio <= 0 or ratio > 1:
+        raise ValueError(f"ratio must be in (0, 1] or (0, 100], got {ratio}")
+    return ratio
+
+
+def random_subset_items(items: list[Any], ratio: float, seed: int, desc: str) -> list[Any]:
+    ratio = normalize_ratio(ratio)
+    if ratio >= 1 or not items:
+        print(f"{desc}: ratio=1.0 kept={len(items)}/{len(items)}")
+        return items
+    n_keep = max(1, int(round(len(items) * ratio)))
+    rng = np.random.default_rng(seed)
+    indices = sorted(rng.choice(len(items), size=n_keep, replace=False).tolist())
+    print(f"{desc}: ratio={ratio:.4f} seed={seed} kept={n_keep}/{len(items)}")
+    return [items[i] for i in indices]
 
 
 def append_csv(path: str, row: dict[str, Any], header: list[str]) -> None:
@@ -250,7 +276,14 @@ def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> 
         project=args.wandb_project,
         entity=args.wandb_entity,
         name=args.wandb_run_name,
-        config={**vars(args), "wrong_rows": n_wrong, "correct_rows": n_correct, "jax_devices": len(jax.devices())},
+        config={
+            **vars(args),
+            "method": "cnl" if args.use_freeze else "sft",
+            "wrong_rows": n_wrong,
+            "correct_rows": n_correct,
+            "correct_ratio_normalized": normalize_ratio(args.correct_ratio),
+            "jax_devices": len(jax.devices()),
+        },
     )
 
 
@@ -359,6 +392,12 @@ def main() -> None:
         correct_batches = correct_batches[: args.max_correct]
     if args.max_wrong is not None:
         wrong_batches = wrong_batches[: args.max_wrong]
+    correct_batches = random_subset_items(
+        correct_batches,
+        args.correct_ratio,
+        args.correct_seed,
+        "subset correct/mastered rows",
+    )
 
     optimizer = make_optimizer(args.optimizer, args.lr, weight_decay=args.weight_decay)
     opt_state = optimizer.init(weights)
@@ -388,6 +427,10 @@ def main() -> None:
     summary_csv = str(Path(args.out_dir) / "summary.csv")
     header = [
         "epoch",
+        "method",
+        "use_freeze",
+        "correct_ratio",
+        "correct_seed",
         "train_avg_loss",
         "wrong_to_correct",
         "correct_to_wrong",
@@ -401,12 +444,25 @@ def main() -> None:
     ]
     wandb_run = maybe_init_wandb(args, len(wrong_batches), len(correct_batches))
     final_metrics = None
+    method = "cnl" if args.use_freeze else "sft"
+    correct_ratio = normalize_ratio(args.correct_ratio)
+
+    def annotate_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+        metrics.update(
+            {
+                "method": method,
+                "use_freeze": args.use_freeze,
+                "correct_ratio": correct_ratio,
+                "correct_seed": args.correct_seed,
+            }
+        )
+        return metrics
 
     if args.eval_before_train:
         print("\n===== Epoch 0 (before training) =====")
         w0 = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_wrong_ep0.jsonl"), "infer wrong ep0")
         c0 = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_correct_ep0.jsonl"), "infer correct ep0")
-        metrics = build_metrics(0, "", w0, c0, len(wrong_batches), len(correct_batches))
+        metrics = annotate_metrics(build_metrics(0, "", w0, c0, len(wrong_batches), len(correct_batches)))
         append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
             wandb_run.log(metrics, step=0)
@@ -421,7 +477,7 @@ def main() -> None:
         train_loss = loss_sum / len(wrong_batches)
         w_ok = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_wrong_ep{ep}.jsonl"), f"infer wrong ep{ep}")
         c_ok = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_correct_ep{ep}.jsonl"), f"infer correct ep{ep}")
-        metrics = build_metrics(ep, train_loss, w_ok, c_ok, len(wrong_batches), len(correct_batches))
+        metrics = annotate_metrics(build_metrics(ep, train_loss, w_ok, c_ok, len(wrong_batches), len(correct_batches)))
         append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
             wandb_run.log(metrics, step=ep)
