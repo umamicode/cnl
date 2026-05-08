@@ -318,6 +318,8 @@ def maybe_init_wandb(args: argparse.Namespace, wrong_rows: int, correct_rows: in
 
     if args.wandb_mode:
         os.environ["WANDB_MODE"] = args.wandb_mode
+    elif os.environ.get("WANDB_MODE") == "":
+        os.environ.pop("WANDB_MODE", None)
 
     return wandb.init(
         project=args.wandb_project,

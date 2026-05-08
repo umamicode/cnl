@@ -265,13 +265,19 @@ def infer_batches(
     return ok
 
 
+def configure_wandb_mode(mode: str | None) -> None:
+    if mode:
+        os.environ["WANDB_MODE"] = mode
+    elif os.environ.get("WANDB_MODE") == "":
+        os.environ.pop("WANDB_MODE", None)
+
+
 def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> Any | None:
     if not args.wandb_project:
         return None
     import wandb
 
-    if args.wandb_mode:
-        os.environ["WANDB_MODE"] = args.wandb_mode
+    configure_wandb_mode(args.wandb_mode)
     return wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,

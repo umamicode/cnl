@@ -45,6 +45,7 @@ from jax_sft.qwen3_ptx_split_train import (
     append_csv,
     array_batch,
     candidate_ids,
+    configure_wandb_mode,
     ensure_pad_token,
     infer_batches,
     load_jsonl,
@@ -147,8 +148,7 @@ def maybe_init_wandb(args: argparse.Namespace, counts: dict[str, int]) -> Any | 
         return None
     import wandb
 
-    if args.wandb_mode:
-        os.environ["WANDB_MODE"] = args.wandb_mode
+    configure_wandb_mode(args.wandb_mode)
     return wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,

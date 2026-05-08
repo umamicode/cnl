@@ -89,8 +89,6 @@ for dataset in ${DATASETS}; do
     MAX_WRONG="${MAX_WRONG}" \
     MAX_CORRECT="${MAX_CORRECT}" \
     WANDB_PROJECT="${WANDB_PROJECT}" \
-    WANDB_ENTITY="${WANDB_ENTITY}" \
-    WANDB_MODE="${WANDB_MODE}" \
     WANDB_RUN_NAME="${run_name}" \
     bash jax_sft/run_qwen3_0_6b_split_train.sh "${dataset}"
 
