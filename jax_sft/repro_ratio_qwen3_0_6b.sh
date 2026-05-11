@@ -23,6 +23,8 @@ DATASET="${1:-csqa}"
 export WANDB_PROJECT="${WANDB_PROJECT:-cnl-repro-ratio-paper-hparams}"
 export SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-${DATASET}-ratio-paper-hparams}"
 export METHODS="${METHODS:-sft cnl cnl_synth}"
+export SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE:-random}"
+export SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N:-512}"
 
 export LRS="${LRS:-1e-9 2e-9 1e-7 2e-7 1e-6 2e-6}"
 export EPOCHS_LIST="${EPOCHS_LIST:-25}"

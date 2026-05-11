@@ -17,6 +17,9 @@ METHODS="${METHODS:-cnl sft}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
 MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS:-}"
+SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE:-random}"
+SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N:-512}"
+SYNTHETIC_CORRECT_SIZE_MATCHES="${SYNTHETIC_CORRECT_SIZE_MATCHES:-fixed}"
 SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS:-}"
 SYNTH_LABEL_MODE="${SYNTH_LABEL_MODE:-argmax}"
 SYNTH_TEMPERATURE="${SYNTH_TEMPERATURE:-1.0}"
@@ -61,21 +64,24 @@ run_one() {
   local optimizer="$7"
   local mask_stage="$8"
   local skip_split="$9"
+  local synth_size_match="${10:-fixed}"
 
   local use_freeze="1"
   local run_mask="${mask_stage}"
+  local synth_suffix=""
   if [[ "${method}" == "sft" ]]; then
     use_freeze="0"
     run_mask="none"
   elif [[ "${method}" == "cnl_synth" ]]; then
     use_freeze="1"
+    synth_suffix="-synth${synth_size_match}"
   elif [[ "${method}" != "cnl" ]]; then
     echo "Unknown method: ${method}" >&2
     exit 1
   fi
 
-  local run_name="${SWEEP_NAME}-${dataset}-${method}-cr${ratio}-seed${seed}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
-  local out_dir="${OUT_ROOT}/${dataset}/${method}_cr${ratio}_seed${seed}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
+  local run_name="${SWEEP_NAME}-${dataset}-${method}${synth_suffix}-cr${ratio}-seed${seed}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
+  local out_dir="${OUT_ROOT}/${dataset}/${method}${synth_suffix}_cr${ratio}_seed${seed}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
 
   echo
   echo "================ Correct-Ratio Repro Run ================"
@@ -84,6 +90,7 @@ run_one() {
   echo "METHOD       : ${method}"
   echo "CORRECT_RATIO: ${ratio}"
   echo "CORRECT_SEED : ${seed}"
+  echo "SYNTH_SIZE   : ${synth_size_match}"
   echo "CORRECT_SUBSET: ${CORRECT_SUBSET_MODE}"
   echo "CORRECT_EVAL  : ${CORRECT_EVAL_SCOPE}"
   echo "LR/EPOCHS    : ${lr} / ${epochs}"
@@ -114,6 +121,9 @@ run_one() {
   MAX_WRONG="${MAX_WRONG}" \
   MAX_CORRECT="${MAX_CORRECT}" \
   SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS}" \
+  SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE}" \
+  SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N}" \
+  SYNTHETIC_CORRECT_SIZE_MATCH="${synth_size_match}" \
   SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS}" \
   SYNTHETIC_LABEL_MODE="${SYNTH_LABEL_MODE}" \
   SYNTHETIC_TEMPERATURE="${SYNTH_TEMPERATURE}" \
@@ -128,7 +138,10 @@ echo "================ Qwen3 Correct-Ratio Repro Sweep ================"
 echo "DATASETS       : ${DATASETS}"
 echo "METHODS        : ${METHODS}"
 echo "MODEL_NAME     : ${MODEL_NAME}"
+echo "SYNTH_MODE     : ${SYNTHETIC_CORRECT_MODE}"
 echo "SYNTH_SOURCE   : ${SYNTHETIC_CORRECT_SOURCE_JSONLS:-source_jsonl}"
+echo "SYNTH_N        : ${SYNTHETIC_CORRECT_N}"
+echo "SYNTH_SIZES    : ${SYNTHETIC_CORRECT_SIZE_MATCHES}"
 echo "CORRECT_RATIOS : ${CORRECT_RATIOS}"
 echo "CORRECT_SEEDS  : ${CORRECT_SEEDS}"
 echo "CORRECT_SUBSET : ${CORRECT_SUBSET_MODE}"
@@ -151,23 +164,35 @@ for dataset in ${DATASETS}; do
         for method in ${METHODS}; do
           if [[ "${method}" == "sft" && "${RUN_SFT_PER_RATIO}" != "1" ]]; then
             skip_split=$([[ "${first_for_dataset}" == "1" ]] && echo 0 || echo 1)
-            run_one "${dataset}" "sft" "100" "0" "${lr}" "${epochs}" "${optimizer}" "gradient" "${skip_split}"
+            run_one "${dataset}" "sft" "100" "0" "${lr}" "${epochs}" "${optimizer}" "gradient" "${skip_split}" "fixed"
             first_for_dataset=0
           elif [[ "${method}" == "sft" ]]; then
             for ratio in ${CORRECT_RATIOS}; do
               for seed in ${CORRECT_SEEDS}; do
                 skip_split=$([[ "${first_for_dataset}" == "1" ]] && echo 0 || echo 1)
-                run_one "${dataset}" "sft" "${ratio}" "${seed}" "${lr}" "${epochs}" "${optimizer}" "gradient" "${skip_split}"
+                run_one "${dataset}" "sft" "${ratio}" "${seed}" "${lr}" "${epochs}" "${optimizer}" "gradient" "${skip_split}" "fixed"
                 first_for_dataset=0
               done
             done
-          elif [[ "${method}" == "cnl" || "${method}" == "cnl_synth" ]]; then
+          elif [[ "${method}" == "cnl" ]]; then
             for ratio in ${CORRECT_RATIOS}; do
               for seed in ${CORRECT_SEEDS}; do
                 for mask_stage in ${MASK_STAGES}; do
                   skip_split=$([[ "${first_for_dataset}" == "1" ]] && echo 0 || echo 1)
-                  run_one "${dataset}" "${method}" "${ratio}" "${seed}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${skip_split}"
+                  run_one "${dataset}" "${method}" "${ratio}" "${seed}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${skip_split}" "fixed"
                   first_for_dataset=0
+                done
+              done
+            done
+          elif [[ "${method}" == "cnl_synth" ]]; then
+            for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
+              for ratio in ${CORRECT_RATIOS}; do
+                for seed in ${CORRECT_SEEDS}; do
+                  for mask_stage in ${MASK_STAGES}; do
+                    skip_split=$([[ "${first_for_dataset}" == "1" ]] && echo 0 || echo 1)
+                    run_one "${dataset}" "${method}" "${ratio}" "${seed}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${skip_split}" "${synth_size_match}"
+                    first_for_dataset=0
+                  done
                 done
               done
             done

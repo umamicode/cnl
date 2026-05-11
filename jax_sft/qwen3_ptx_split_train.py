@@ -55,6 +55,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Prompt bank to pseudo-label for cnl_synth. Defaults to source_jsonl.",
     )
+    p.add_argument(
+        "--synthetic_correct_mode",
+        choices=["source", "random"],
+        default="source",
+        help=(
+            "How cnl_synth gets prompts. 'source' pseudo-labels an existing "
+            "prompt bank; 'random' creates task-shaped MCQ prompts from a "
+            "small built-in vocabulary before pseudo-labeling."
+        ),
+    )
+    p.add_argument("--synthetic_correct_n", type=int, default=512)
+    p.add_argument(
+        "--synthetic_correct_size_match",
+        choices=["fixed", "correct", "wrong"],
+        default="fixed",
+        help=(
+            "For cnl_synth, choose synthetic reference count. 'fixed' uses "
+            "synthetic_correct_n/max_rows; 'correct' matches the real correct "
+            "set size; 'wrong' matches the real wrong set size."
+        ),
+    )
     p.add_argument("--synthetic_correct_max_rows", type=int, default=None)
     p.add_argument("--synthetic_label_mode", choices=["argmax", "sample"], default="argmax")
     p.add_argument("--synthetic_temperature", type=float, default=1.0)
@@ -266,6 +287,113 @@ def stable_softmax(x: np.ndarray) -> np.ndarray:
     x = x - np.max(x)
     ex = np.exp(x)
     return ex / np.sum(ex)
+
+
+def make_random_mcq_rows(n_rows: int, seed: int) -> list[dict[str, Any]]:
+    rng = np.random.default_rng(seed)
+    subjects = [
+        "a student",
+        "a chef",
+        "a doctor",
+        "a traveler",
+        "a gardener",
+        "a teacher",
+        "a mechanic",
+        "a musician",
+        "an athlete",
+        "a parent",
+        "a scientist",
+        "an artist",
+    ]
+    intents = [
+        "needs to write a note",
+        "wants to stay dry in rain",
+        "is preparing food",
+        "needs to measure time",
+        "wants to open a locked door",
+        "is cleaning a floor",
+        "needs to cut paper",
+        "wants to drink water",
+        "is planting seeds",
+        "needs to fix a loose screw",
+        "wants to read in the dark",
+        "is going to mail a letter",
+    ]
+    places = [
+        "kitchen",
+        "classroom",
+        "hospital",
+        "garden",
+        "office",
+        "garage",
+        "library",
+        "airport",
+        "store",
+        "park",
+        "bedroom",
+        "workshop",
+    ]
+    objects = [
+        "pencil",
+        "umbrella",
+        "spoon",
+        "clock",
+        "key",
+        "mop",
+        "scissors",
+        "cup",
+        "shovel",
+        "screwdriver",
+        "lamp",
+        "stamp",
+        "blanket",
+        "hammer",
+        "book",
+        "phone",
+        "shoe",
+        "plate",
+        "bottle",
+        "ruler",
+        "chair",
+        "map",
+        "wallet",
+        "soap",
+        "towel",
+        "basket",
+        "paintbrush",
+        "fork",
+        "battery",
+        "notebook",
+    ]
+    question_templates = [
+        "Question: In a {place}, {subject} {intent}. Which object is most useful?",
+        "Question: {subject_cap} {intent} while in a {place}. What should they use?",
+        "Question: Which item would best help {subject} who {intent}?",
+        "Question: If {subject} is in a {place} and {intent}, which choice makes the most sense?",
+    ]
+    rows = []
+    for i in range(n_rows):
+        options = rng.choice(objects, size=4, replace=False).tolist()
+        subject = str(rng.choice(subjects))
+        intent = str(rng.choice(intents))
+        place = str(rng.choice(places))
+        template = str(rng.choice(question_templates))
+        stem = template.format(
+            subject=subject,
+            subject_cap=subject[:1].upper() + subject[1:],
+            intent=intent,
+            place=place,
+        )
+        question = (
+            f"{stem}\n"
+            f"A. {options[0]}\n"
+            f"B. {options[1]}\n"
+            f"C. {options[2]}\n"
+            f"D. {options[3]}\n"
+            "Answer:"
+        )
+        rows.append({"question": question, "label": "A", "synthetic_prompt": True, "synthetic_prompt_id": i})
+    return rows
 
 
 def make_synthetic_correct_batches(
@@ -565,13 +693,17 @@ def main() -> None:
         if not correct_ref_source_batches:
             raise ValueError("synthetic correct/reference set is empty")
     elif effective_method(args) == "cnl_synth":
-        source_paths = args.synthetic_correct_source_jsonl or args.source_jsonl
-        synthetic_max_rows = (
-            args.synthetic_correct_max_rows
-            if args.synthetic_correct_max_rows is not None
-            else args.max_rows
-        )
-        synthetic_rows = load_jsonl(source_paths, synthetic_max_rows)
+        if args.synthetic_correct_size_match == "correct":
+            matched_synth_n = len(correct_batches)
+        elif args.synthetic_correct_size_match == "wrong":
+            matched_synth_n = len(wrong_batches)
+        else:
+            matched_synth_n = args.synthetic_correct_max_rows or args.synthetic_correct_n
+        if args.synthetic_correct_mode == "random":
+            synthetic_rows = make_random_mcq_rows(matched_synth_n, args.synthetic_seed)
+        else:
+            source_paths = args.synthetic_correct_source_jsonl or args.source_jsonl
+            synthetic_rows = load_jsonl(source_paths, matched_synth_n)
         correct_ref_source_batches = make_synthetic_correct_batches(
             synthetic_rows,
             model.tokenizer,
@@ -636,6 +768,9 @@ def main() -> None:
         "correct_subset_mode",
         "correct_eval_scope",
         "n_correct_ref",
+        "synthetic_correct_mode",
+        "synthetic_correct_size_match",
+        "synthetic_correct_n_effective",
         "train_avg_loss",
         "wrong_to_correct",
         "correct_to_wrong",
@@ -664,6 +799,9 @@ def main() -> None:
                 "correct_subset_mode": args.correct_subset_mode,
                 "correct_eval_scope": args.correct_eval_scope,
                 "n_correct_ref": len(correct_ref_batches),
+                "synthetic_correct_mode": args.synthetic_correct_mode if method == "cnl_synth" else "",
+                "synthetic_correct_size_match": args.synthetic_correct_size_match if method == "cnl_synth" else "",
+                "synthetic_correct_n_effective": len(correct_ref_source_batches) if method == "cnl_synth" else "",
             }
         )
         return metrics

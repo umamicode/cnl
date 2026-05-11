@@ -29,6 +29,9 @@ WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 MASK_STAGES="${MASK_STAGES:-gradient update}"
 METHODS="${METHODS:-cnl sft}"
 SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS:-}"
+SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE:-random}"
+SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N:-512}"
+SYNTHETIC_CORRECT_SIZE_MATCHES="${SYNTHETIC_CORRECT_SIZE_MATCHES:-fixed}"
 SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS:-}"
 SYNTH_LABEL_MODE="${SYNTH_LABEL_MODE:-argmax}"
 SYNTH_TEMPERATURE="${SYNTH_TEMPERATURE:-1.0}"
@@ -53,21 +56,24 @@ run_one() {
   local epochs="$3"
   local optimizer="$4"
   local mask_stage="$5"
+  local synth_size_match="${6:-fixed}"
   local use_freeze="1"
   local run_mask="${mask_stage}"
+  local synth_suffix=""
 
   if [[ "${method}" == "sft" ]]; then
     use_freeze="0"
     run_mask="none"
   elif [[ "${method}" == "cnl_synth" ]]; then
     use_freeze="1"
+    synth_suffix="-synth${synth_size_match}"
   elif [[ "${method}" != "cnl" ]]; then
     echo "Unknown method: ${method}" >&2
     exit 1
   fi
 
-  local run_name="${SWEEP_NAME}-${method}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
-  local out_dir="${OUT_ROOT}/${method}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
+  local run_name="${SWEEP_NAME}-${method}${synth_suffix}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
+  local out_dir="${OUT_ROOT}/${method}${synth_suffix}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
 
   echo
   echo "================ Sweep Run ================"
@@ -77,6 +83,7 @@ run_one() {
   echo "EPOCHS    : ${epochs}"
   echo "OPTIMIZER : ${optimizer}"
   echo "MASK      : ${run_mask}"
+  echo "SYNTH_SIZE: ${synth_size_match}"
   echo "OUT_DIR   : ${out_dir}"
   echo "==========================================="
 
@@ -98,6 +105,9 @@ run_one() {
   MAX_WRONG="${MAX_WRONG}" \
   MAX_CORRECT="${MAX_CORRECT}" \
   SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS}" \
+  SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE}" \
+  SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N}" \
+  SYNTHETIC_CORRECT_SIZE_MATCH="${synth_size_match}" \
   SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS}" \
   SYNTHETIC_LABEL_MODE="${SYNTH_LABEL_MODE}" \
   SYNTHETIC_TEMPERATURE="${SYNTH_TEMPERATURE}" \
@@ -118,7 +128,10 @@ echo "OPTIMIZERS    : ${OPTIMIZERS}"
 echo "WEIGHT_DECAY  : ${WEIGHT_DECAY}"
 echo "MASK_STAGES   : ${MASK_STAGES}"
 echo "METHODS       : ${METHODS}"
+echo "SYNTH_MODE    : ${SYNTHETIC_CORRECT_MODE}"
 echo "SYNTH_SOURCE  : ${SYNTHETIC_CORRECT_SOURCE_JSONLS:-source_jsonl}"
+echo "SYNTH_N       : ${SYNTHETIC_CORRECT_N}"
+echo "SYNTH_SIZES   : ${SYNTHETIC_CORRECT_SIZE_MATCHES}"
 echo "MAX_ROWS      : ${MAX_ROWS}"
 echo "MAX_WRONG     : ${MAX_WRONG}"
 echo "MAX_CORRECT   : ${MAX_CORRECT}"
@@ -131,15 +144,23 @@ for lr in ${LRS}; do
   for epochs in ${EPOCHS_LIST}; do
     for optimizer in ${OPTIMIZERS}; do
       for method in ${METHODS}; do
-        if [[ "${method}" == "cnl" || "${method}" == "cnl_synth" ]]; then
+        if [[ "${method}" == "cnl" ]]; then
           for mask_stage in ${MASK_STAGES}; do
             SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-            run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}"
+            run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed"
             first_run=0
+          done
+        elif [[ "${method}" == "cnl_synth" ]]; then
+          for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
+            for mask_stage in ${MASK_STAGES}; do
+              SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
+              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}"
+              first_run=0
+            done
           done
         elif [[ "${method}" == "sft" ]]; then
           SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-          run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "gradient"
+          run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "gradient" "fixed"
           first_run=0
         else
           echo "Unknown method: ${method}" >&2
