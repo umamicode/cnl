@@ -17,6 +17,8 @@ MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 
 CORRECT_RATIOS="${CORRECT_RATIOS:-10 20 40 60 80 100}"
 CORRECT_SEEDS="${CORRECT_SEEDS:-0}"
+CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE:-random}"
+CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-subset}"
 
 LRS="${LRS:-${LR:-1e-8 2e-8 5e-8 1e-7 2e-7 5e-7 1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4}}"
 EPOCHS_LIST="${EPOCHS_LIST:-${EPOCHS:-1 2 3}}"
@@ -92,6 +94,8 @@ run_one() {
   USE_FREEZE="${use_freeze}" \
   CORRECT_RATIO="${ratio}" \
   CORRECT_SEED="${seed}" \
+  CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE}" \
+  CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE}" \
   SKIP_SPLIT="${skip_split}" \
   MAX_ROWS="${MAX_ROWS}" \
   MAX_WRONG="${MAX_WRONG}" \
@@ -107,6 +111,8 @@ echo "METHODS        : ${METHODS}"
 echo "MODEL_NAME     : ${MODEL_NAME}"
 echo "CORRECT_RATIOS : ${CORRECT_RATIOS}"
 echo "CORRECT_SEEDS  : ${CORRECT_SEEDS}"
+echo "CORRECT_SUBSET : ${CORRECT_SUBSET_MODE}"
+echo "CORRECT_EVAL   : ${CORRECT_EVAL_SCOPE}"
 echo "LRS            : ${LRS}"
 echo "EPOCHS_LIST    : ${EPOCHS_LIST}"
 echo "OPTIMIZERS     : ${OPTIMIZERS}"

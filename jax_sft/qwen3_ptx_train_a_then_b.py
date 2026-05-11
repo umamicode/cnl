@@ -148,6 +148,7 @@ def maybe_init_wandb(args: argparse.Namespace, counts: dict[str, int]) -> Any | 
         return None
     import wandb
 
+    method = method_label(args)
     configure_wandb_mode(args.wandb_mode)
     return wandb.init(
         project=args.wandb_project,
@@ -156,9 +157,9 @@ def maybe_init_wandb(args: argparse.Namespace, counts: dict[str, int]) -> Any | 
         config={
             **vars(args),
             **counts,
-            "method": "cnl_synth"
-            if args.b_method == "cnl" and args.synthetic_b_retention
-            else args.b_method,
+            "method": method,
+            "method_id": method_id(method),
+            "is_cnl": int(method.startswith("cnl")),
             "jax_devices": len(jax.devices()),
         },
     )
@@ -169,6 +170,14 @@ def write_stage_json(path: str, metrics: dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, sort_keys=True)
         f.write("\n")
+
+
+def method_label(args: argparse.Namespace) -> str:
+    return "cnl_synth" if args.b_method == "cnl" and args.synthetic_b_retention else args.b_method
+
+
+def method_id(method: str) -> int:
+    return {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1)
 
 
 def normalize_ratio(ratio: float) -> float:
@@ -367,6 +376,8 @@ def main() -> None:
     header = [
         "stage",
         "method",
+        "method_id",
+        "is_cnl",
         "b_method",
         "synthetic_b_retention",
         "b_retention_ratio",
@@ -425,7 +436,8 @@ def main() -> None:
         "b_retention_seed": args.b_retention_seed,
     }
     wandb_run = maybe_init_wandb(args, counts)
-    method = "cnl_synth" if args.b_method == "cnl" and args.synthetic_b_retention else args.b_method
+    method = method_label(args)
+    numeric_method_id = method_id(method)
 
     def evaluate(stage: str, global_step: int, a_epoch: int, b_epoch: int, train_avg_loss: float | str) -> dict[str, Any]:
         a_ok = infer_batches(
@@ -466,6 +478,8 @@ def main() -> None:
         metrics.update(
             {
                 "method": method,
+                "method_id": numeric_method_id,
+                "is_cnl": int(method.startswith("cnl")),
                 "b_method": args.b_method,
                 "synthetic_b_retention": args.synthetic_b_retention,
                 "b_retention_ratio": b_retention_ratio,

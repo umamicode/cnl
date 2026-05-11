@@ -1,0 +1,8 @@
+name,method,correct_ratio,correct_seed,lr,epochs,optimizer,mask_stage,correct_accuracy,wrong_accuracy,forgetting_rate
+qwen3-0.6b-correct-ratio-csqa-sft-cr100-seed0-lr5e-7-ep3-optadamw-masknone,sft,100.0,0,5e-7,3,adamw,none,0.3292079207920792,0.9653179190751444,0.6707920792079207
+qwen3-0.6b-correct-ratio-csqa-cnl-cr100-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,100.0,0,5e-7,3,adamw,update,0.5866336633663366,0.8569364161849711,0.4133663366336634
+qwen3-0.6b-correct-ratio-csqa-cnl-cr80-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,80.0,0,5e-7,3,adamw,update,0.653250773993808,0.865606936416185,0.34674922600619196
+qwen3-0.6b-correct-ratio-csqa-cnl-cr60-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,60.0,0,5e-7,3,adamw,update,0.6528925619834711,0.8670520231213873,0.3471074380165289
+qwen3-0.6b-correct-ratio-csqa-cnl-cr40-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,40.0,0,5e-7,3,adamw,update,0.7469135802469136,0.8583815028901735,0.25308641975308643
+qwen3-0.6b-correct-ratio-csqa-cnl-cr20-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,20.0,0,5e-7,3,adamw,update,0.9135802469135802,0.8728323699421965,0.0864197530864198
+qwen3-0.6b-correct-ratio-csqa-cnl-cr10-seed0-lr5e-7-ep3-optadamw-maskupdate,cnl,10.0,0,5e-7,3,adamw,update,0.975,0.916184971098266,0.025000000000000022

@@ -38,6 +38,8 @@ MAX_WRONG="${MAX_WRONG:-}"
 MAX_CORRECT="${MAX_CORRECT:-}"
 CORRECT_RATIO="${CORRECT_RATIO:-100}"
 CORRECT_SEED="${CORRECT_SEED:-0}"
+CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE:-random}"
+CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-subset}"
 
 # Optional W&B settings.
 WANDB_PROJECT="${WANDB_PROJECT:-}"
@@ -134,6 +136,8 @@ echo "MAX_LENGTH    : ${MAX_LENGTH}"
 echo "SKIP_SPLIT    : ${SKIP_SPLIT}"
 echo "CORRECT_RATIO : ${CORRECT_RATIO}"
 echo "CORRECT_SEED  : ${CORRECT_SEED}"
+echo "CORRECT_SUBSET: ${CORRECT_SUBSET_MODE}"
+echo "CORRECT_EVAL  : ${CORRECT_EVAL_SCOPE}"
 echo "====================================================="
 
 if [[ "${BACKEND}" == "ptx" ]]; then
@@ -154,6 +158,8 @@ if [[ "${BACKEND}" == "ptx" ]]; then
     --eval_before_train "${EVAL_BEFORE_TRAIN}"
     --correct_ratio "${CORRECT_RATIO}"
     --correct_seed "${CORRECT_SEED}"
+    --correct_subset_mode "${CORRECT_SUBSET_MODE}"
+    --correct_eval_scope "${CORRECT_EVAL_SCOPE}"
   )
   if [[ -n "${PTX_DIR}" ]]; then
     PTX_FLAGS+=(--ptx_dir "${PTX_DIR}")

@@ -55,6 +55,26 @@ def parse_args() -> argparse.Namespace:
         help="Random fraction of correct/mastered rows to keep. Values >1 are interpreted as percentages.",
     )
     p.add_argument("--correct_seed", type=int, default=0)
+    p.add_argument(
+        "--correct_subset_mode",
+        choices=["random", "nested"],
+        default="random",
+        help=(
+            "How to select correct/mastered reference rows. 'random' keeps the "
+            "original independent subset behavior; 'nested' uses a seed-specific "
+            "permutation prefix so larger ratios contain smaller ratios."
+        ),
+    )
+    p.add_argument(
+        "--correct_eval_scope",
+        choices=["subset", "all"],
+        default="subset",
+        help=(
+            "Which correct/mastered rows to evaluate after training. 'subset' "
+            "keeps legacy behavior; 'all' evaluates retention on the full "
+            "correct set while using correct_ratio only for the CNL reference set."
+        ),
+    )
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-7)
     p.add_argument("--optimizer", choices=["sgd", "adam", "adamw"], default="sgd")
@@ -101,15 +121,21 @@ def normalize_ratio(ratio: float) -> float:
     return ratio
 
 
-def random_subset_items(items: list[Any], ratio: float, seed: int, desc: str) -> list[Any]:
+def subset_items(items: list[Any], ratio: float, seed: int, mode: str, desc: str) -> list[Any]:
     ratio = normalize_ratio(ratio)
     if ratio >= 1 or not items:
-        print(f"{desc}: ratio=1.0 kept={len(items)}/{len(items)}")
+        print(f"{desc}: ratio=1.0 mode={mode} kept={len(items)}/{len(items)}")
         return items
     n_keep = max(1, int(round(len(items) * ratio)))
     rng = np.random.default_rng(seed)
-    indices = sorted(rng.choice(len(items), size=n_keep, replace=False).tolist())
-    print(f"{desc}: ratio={ratio:.4f} seed={seed} kept={n_keep}/{len(items)}")
+    if mode == "random":
+        indices = rng.choice(len(items), size=n_keep, replace=False).tolist()
+    elif mode == "nested":
+        indices = rng.permutation(len(items))[:n_keep].tolist()
+    else:
+        raise ValueError(f"unknown subset mode: {mode}")
+    indices = sorted(indices)
+    print(f"{desc}: ratio={ratio:.4f} seed={seed} mode={mode} kept={n_keep}/{len(items)}")
     return [items[i] for i in indices]
 
 
@@ -272,7 +298,12 @@ def configure_wandb_mode(mode: str | None) -> None:
         os.environ.pop("WANDB_MODE", None)
 
 
-def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> Any | None:
+def maybe_init_wandb(
+    args: argparse.Namespace,
+    n_wrong: int,
+    n_correct_eval: int,
+    n_correct_ref: int,
+) -> Any | None:
     if not args.wandb_project:
         return None
     import wandb
@@ -286,7 +317,9 @@ def maybe_init_wandb(args: argparse.Namespace, n_wrong: int, n_correct: int) -> 
             **vars(args),
             "method": "cnl" if args.use_freeze else "sft",
             "wrong_rows": n_wrong,
-            "correct_rows": n_correct,
+            "correct_rows": n_correct_eval,
+            "correct_eval_rows": n_correct_eval,
+            "correct_ref_rows": n_correct_ref,
             "correct_ratio_normalized": normalize_ratio(args.correct_ratio),
             "jax_devices": len(jax.devices()),
         },
@@ -398,12 +431,18 @@ def main() -> None:
         correct_batches = correct_batches[: args.max_correct]
     if args.max_wrong is not None:
         wrong_batches = wrong_batches[: args.max_wrong]
-    correct_batches = random_subset_items(
+    correct_eval_batches = list(correct_batches)
+    correct_ref_batches = subset_items(
         correct_batches,
         args.correct_ratio,
         args.correct_seed,
+        args.correct_subset_mode,
         "subset correct/mastered rows",
     )
+    if args.correct_eval_scope == "subset":
+        correct_eval_batches = correct_ref_batches
+    print(f"correct reference rows: {len(correct_ref_batches)}")
+    print(f"correct eval rows     : {len(correct_eval_batches)} ({args.correct_eval_scope})")
 
     optimizer = make_optimizer(args.optimizer, args.lr, weight_decay=args.weight_decay)
     opt_state = optimizer.init(weights)
@@ -437,6 +476,9 @@ def main() -> None:
         "use_freeze",
         "correct_ratio",
         "correct_seed",
+        "correct_subset_mode",
+        "correct_eval_scope",
+        "n_correct_ref",
         "train_avg_loss",
         "wrong_to_correct",
         "correct_to_wrong",
@@ -448,7 +490,6 @@ def main() -> None:
         "n_wrong",
         "n_correct",
     ]
-    wandb_run = maybe_init_wandb(args, len(wrong_batches), len(correct_batches))
     final_metrics = None
     method = "cnl" if args.use_freeze else "sft"
     correct_ratio = normalize_ratio(args.correct_ratio)
@@ -460,30 +501,40 @@ def main() -> None:
                 "use_freeze": args.use_freeze,
                 "correct_ratio": correct_ratio,
                 "correct_seed": args.correct_seed,
+                "correct_subset_mode": args.correct_subset_mode,
+                "correct_eval_scope": args.correct_eval_scope,
+                "n_correct_ref": len(correct_ref_batches),
             }
         )
         return metrics
 
+    wandb_run = maybe_init_wandb(
+        args,
+        len(wrong_batches),
+        len(correct_eval_batches),
+        len(correct_ref_batches),
+    )
+
     if args.eval_before_train:
         print("\n===== Epoch 0 (before training) =====")
         w0 = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_wrong_ep0.jsonl"), "infer wrong ep0")
-        c0 = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_correct_ep0.jsonl"), "infer correct ep0")
-        metrics = annotate_metrics(build_metrics(0, "", w0, c0, len(wrong_batches), len(correct_batches)))
+        c0 = infer_batches(weights, correct_eval_batches, predict_logits_fn, cand_ids, str(jsonl_dir / "infer_correct_ep0.jsonl"), "infer correct ep0")
+        metrics = annotate_metrics(build_metrics(0, "", w0, c0, len(wrong_batches), len(correct_eval_batches)))
         append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
             wandb_run.log(metrics, step=0)
 
     for ep in range(1, args.epochs + 1):
         print(f"\n===== Epoch {ep} =====")
-        ref_grads = mean_grad_correct(weights, correct_batches, loss_grad_fn) if args.use_freeze else None
+        ref_grads = mean_grad_correct(weights, correct_ref_batches, loss_grad_fn) if args.use_freeze else None
         loss_sum = 0.0
         for batch in tqdm(wrong_batches, desc=f"train wrong ep{ep}"):
             weights, opt_state, loss = train_step_fn(weights, opt_state, array_batch(batch), ref_grads)
             loss_sum += float(loss)
         train_loss = loss_sum / len(wrong_batches)
         w_ok = infer_batches(weights, wrong_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_wrong_ep{ep}.jsonl"), f"infer wrong ep{ep}")
-        c_ok = infer_batches(weights, correct_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_correct_ep{ep}.jsonl"), f"infer correct ep{ep}")
-        metrics = annotate_metrics(build_metrics(ep, train_loss, w_ok, c_ok, len(wrong_batches), len(correct_batches)))
+        c_ok = infer_batches(weights, correct_eval_batches, predict_logits_fn, cand_ids, str(jsonl_dir / f"infer_correct_ep{ep}.jsonl"), f"infer correct ep{ep}")
+        metrics = annotate_metrics(build_metrics(ep, train_loss, w_ok, c_ok, len(wrong_batches), len(correct_eval_batches)))
         append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
             wandb_run.log(metrics, step=ep)

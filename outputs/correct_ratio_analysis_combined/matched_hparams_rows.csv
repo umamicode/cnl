@@ -1,0 +1,8 @@
+name,method,correct_ratio,correct_seed,lr,epochs,optimizer,mask_stage,correct_accuracy,wrong_accuracy,forgetting_rate
+qwen3-0.6b-correct-ratio-csqa-cnl-cr100-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,100.0,0,1e-7,25,sgd,gradient,1.0,0.4653179190751445,0.0
+qwen3-0.6b-correct-ratio-csqa-cnl-cr80-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,80.0,0,1e-7,25,sgd,gradient,1.0,0.4638728323699422,0.0
+qwen3-0.6b-correct-ratio-csqa-cnl-cr60-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,60.0,0,1e-7,25,sgd,gradient,1.0,0.4841040462427746,0.0
+qwen3-0.6b-correct-ratio-csqa-cnl-cr40-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,40.0,0,1e-7,25,sgd,gradient,1.0,0.6372832369942196,0.0
+qwen3-0.6b-correct-ratio-csqa-cnl-cr20-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,20.0,0,1e-7,25,sgd,gradient,1.0,0.6676300578034682,0.0
+qwen3-0.6b-correct-ratio-csqa-cnl-cr10-seed0-lr1e-7-ep25-optsgd-maskgradient,cnl,10.0,0,1e-7,25,sgd,gradient,1.0,0.7052023121387283,0.0
+qwen3-0.6b-correct-ratio-csqa-sft-cr100-seed0-lr1e-7-ep25-optsgd-masknone,sft,100.0,0,1e-7,25,sgd,none,0.349009900990099,0.6676300578034682,0.650990099009901
