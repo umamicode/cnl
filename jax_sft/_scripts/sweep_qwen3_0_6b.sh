@@ -6,7 +6,7 @@ set -euo pipefail
 # Example:
 #   WANDB_PROJECT=cnl-repro bash jax_sft/sweep_qwen3_0_6b.sh csqa
 #
-# Smoke sweep:
+# Smoke/capped sweep:
 #   MAX_ROWS=64 MAX_WRONG=32 MAX_CORRECT=32 \
 #   LRS="1e-8 5e-8" EPOCHS_LIST="1" \
 #   WANDB_PROJECT=cnl-repro bash jax_sft/sweep_qwen3_0_6b.sh csqa
@@ -15,6 +15,8 @@ set -euo pipefail
 #   gradient = mask raw gradients before the optimizer update
 #   update   = mask the final optimizer update direction
 # SFT runs ignore MASK_STAGES and are logged as masknone.
+# cnl_synth uses CNL but replaces the real correct-reference set with the
+# model's own pseudo-labeled outputs from a prompt bank.
 
 DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
@@ -26,15 +28,21 @@ OPTIMIZERS="${OPTIMIZERS:-adamw sgd}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 MASK_STAGES="${MASK_STAGES:-gradient update}"
 METHODS="${METHODS:-cnl sft}"
+SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS:-}"
+SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS:-}"
+SYNTH_LABEL_MODE="${SYNTH_LABEL_MODE:-argmax}"
+SYNTH_TEMPERATURE="${SYNTH_TEMPERATURE:-1.0}"
+SYNTH_MIN_CONFIDENCE="${SYNTH_MIN_CONFIDENCE:-0.0}"
+SYNTH_SEED="${SYNTH_SEED:-0}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-cnl-repro}"
 SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-${DATASET}-sweep}"
 OUT_ROOT="${OUT_ROOT:-jax_ckpts/sweeps/${SWEEP_NAME}}"
 DATA_ROOT="${DATA_ROOT:-data}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
-MAX_ROWS="${MAX_ROWS:-512}"
-MAX_WRONG="${MAX_WRONG:-256}"
-MAX_CORRECT="${MAX_CORRECT:-256}"
+MAX_ROWS="${MAX_ROWS:-}"
+MAX_WRONG="${MAX_WRONG:-}"
+MAX_CORRECT="${MAX_CORRECT:-}"
 
 OUT_CORRECT="${OUT_CORRECT:-${DATA_ROOT}/${DATASET}_correct_${MODEL_TAG}.jsonl}"
 OUT_WRONG="${OUT_WRONG:-${DATA_ROOT}/${DATASET}_wrong_${MODEL_TAG}.jsonl}"
@@ -51,6 +59,11 @@ run_one() {
   if [[ "${method}" == "sft" ]]; then
     use_freeze="0"
     run_mask="none"
+  elif [[ "${method}" == "cnl_synth" ]]; then
+    use_freeze="1"
+  elif [[ "${method}" != "cnl" ]]; then
+    echo "Unknown method: ${method}" >&2
+    exit 1
   fi
 
   local run_name="${SWEEP_NAME}-${method}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
@@ -76,6 +89,7 @@ run_one() {
   LR="${lr}" \
   EPOCHS="${epochs}" \
   OPTIMIZER="${optimizer}" \
+  METHOD_NAME="${method}" \
   WEIGHT_DECAY="${WEIGHT_DECAY}" \
   MASK_STAGE="${mask_stage}" \
   USE_FREEZE="${use_freeze}" \
@@ -83,10 +97,16 @@ run_one() {
   MAX_ROWS="${MAX_ROWS}" \
   MAX_WRONG="${MAX_WRONG}" \
   MAX_CORRECT="${MAX_CORRECT}" \
+  SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS}" \
+  SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS}" \
+  SYNTHETIC_LABEL_MODE="${SYNTH_LABEL_MODE}" \
+  SYNTHETIC_TEMPERATURE="${SYNTH_TEMPERATURE}" \
+  SYNTHETIC_MIN_CONFIDENCE="${SYNTH_MIN_CONFIDENCE}" \
+  SYNTHETIC_SEED="${SYNTH_SEED}" \
   SKIP_SPLIT="${SKIP_SPLIT_FOR_RUN}" \
   WANDB_PROJECT="${WANDB_PROJECT}" \
   WANDB_RUN_NAME="${run_name}" \
-  bash jax_sft/run_qwen3_0_6b_split_train.sh "${DATASET}"
+  bash jax_sft/_scripts/run_qwen3_0_6b_split_train.sh "${DATASET}"
 }
 
 echo "================ Qwen3 CNL Sweep ================"
@@ -98,6 +118,7 @@ echo "OPTIMIZERS    : ${OPTIMIZERS}"
 echo "WEIGHT_DECAY  : ${WEIGHT_DECAY}"
 echo "MASK_STAGES   : ${MASK_STAGES}"
 echo "METHODS       : ${METHODS}"
+echo "SYNTH_SOURCE  : ${SYNTHETIC_CORRECT_SOURCE_JSONLS:-source_jsonl}"
 echo "MAX_ROWS      : ${MAX_ROWS}"
 echo "MAX_WRONG     : ${MAX_WRONG}"
 echo "MAX_CORRECT   : ${MAX_CORRECT}"
@@ -110,7 +131,7 @@ for lr in ${LRS}; do
   for epochs in ${EPOCHS_LIST}; do
     for optimizer in ${OPTIMIZERS}; do
       for method in ${METHODS}; do
-        if [[ "${method}" == "cnl" ]]; then
+        if [[ "${method}" == "cnl" || "${method}" == "cnl_synth" ]]; then
           for mask_stage in ${MASK_STAGES}; do
             SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
             run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}"

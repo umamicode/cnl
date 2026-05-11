@@ -79,6 +79,6 @@ RETENTION_FILTER="${RETENTION_FILTER:-none}" \
 TRAIN_FILTER="${TRAIN_FILTER:-none}" \
 OUT_ROOT="${OUT_ROOT}" \
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-qwen3-0.6b-synthA-${A_DATASET}-to-${B_DATASET}-${METHOD:-cnl}}" \
-bash jax_sft/run_qwen3_0_6b_ab_train.sh "${A_DATASET}_synthetic" "${B_DATASET}"
+bash jax_sft/_scripts/run_qwen3_0_6b_ab_train.sh "${A_DATASET}_synthetic" "${B_DATASET}"
 
 echo "Synthetic-A A/B run done."

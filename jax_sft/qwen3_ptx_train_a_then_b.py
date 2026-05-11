@@ -118,11 +118,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--a_lr", type=float, default=1e-7)
     p.add_argument("--a_optimizer", choices=["sgd", "adam", "adamw"], default="adamw")
     p.add_argument("--a_weight_decay", type=float, default=1e-4)
+    p.add_argument(
+        "--a_target_loss",
+        type=float,
+        default=None,
+        help="Optional A-stage stop condition. A training stops early once A eval loss is <= this value.",
+    )
 
     p.add_argument("--b_epochs", type=int, default=1)
     p.add_argument("--b_lr", type=float, default=1e-7)
     p.add_argument("--b_optimizer", choices=["sgd", "adam", "adamw"], default="adamw")
     p.add_argument("--b_weight_decay", type=float, default=1e-4)
+    p.add_argument(
+        "--b_target_loss",
+        type=float,
+        default=None,
+        help="Optional B-stage stop condition. B training stops early once B eval loss is <= this value.",
+    )
     p.add_argument("--b_method", choices=["cnl", "sft"], default="cnl")
     p.add_argument("--mask_stage", choices=["gradient", "update"], default="update")
     p.add_argument(
@@ -412,6 +424,8 @@ def main() -> None:
         "b_lr",
         "a_optimizer",
         "b_optimizer",
+        "a_target_loss",
+        "b_target_loss",
         "mask_stage",
         "global_step",
         "a_epoch",
@@ -517,6 +531,8 @@ def main() -> None:
                 "b_lr": args.b_lr,
                 "a_optimizer": args.a_optimizer,
                 "b_optimizer": args.b_optimizer,
+                "a_target_loss": args.a_target_loss if args.a_target_loss is not None else "",
+                "b_target_loss": args.b_target_loss if args.b_target_loss is not None else "",
                 "mask_stage": args.mask_stage if args.b_method == "cnl" else "none",
             }
         )
@@ -527,6 +543,8 @@ def main() -> None:
     a_after_a_loss = None
     b_before_b_loss = None
     b_retention_ref_rows = 0
+    a_completed_epochs = 0
+    b_completed_epochs = 0
     global_step = 0
     final_metrics = None
 
@@ -561,6 +579,10 @@ def main() -> None:
         if wandb_run is not None:
             wandb_run.log(metrics, step=global_step)
         final_metrics = metrics
+        a_completed_epochs = ep
+        if args.a_target_loss is not None and float(metrics["a_loss"]) <= args.a_target_loss:
+            print(f"A target loss reached: {metrics['a_loss']:.6f} <= {args.a_target_loss:.6f}")
+            break
 
     if final_metrics is None:
         raise ValueError("--a_epochs must be >= 1 for the practical A-then-B setting")
@@ -572,7 +594,7 @@ def main() -> None:
     after_a_metrics = build_metrics(
         stage="after_a",
         global_step=global_step,
-        a_epoch=args.a_epochs,
+        a_epoch=a_completed_epochs,
         b_epoch=0,
         train_avg_loss=final_metrics["train_avg_loss"],
         a_ok=int(final_metrics["a_correct"]),
@@ -691,11 +713,15 @@ def main() -> None:
             loss_sum += float(loss)
             global_step += 1
         train_loss = loss_sum / len(b_train_batches)
-        metrics = evaluate(f"after_b_ep{ep}", global_step, args.a_epochs, ep, train_loss)
+        metrics = evaluate(f"after_b_ep{ep}", global_step, a_completed_epochs, ep, train_loss)
         append_csv(summary_csv, metrics, header)
         if wandb_run is not None:
             wandb_run.log(metrics, step=global_step)
         final_metrics = metrics
+        b_completed_epochs = ep
+        if args.b_target_loss is not None and float(metrics["b_loss"]) <= args.b_target_loss:
+            print(f"B target loss reached: {metrics['b_loss']:.6f} <= {args.b_target_loss:.6f}")
+            break
 
     if final_metrics is not None:
         save_final_summary(args.out_dir, final_metrics)

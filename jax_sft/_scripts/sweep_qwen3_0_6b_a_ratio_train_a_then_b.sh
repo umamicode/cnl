@@ -28,6 +28,8 @@ A_EPOCHS_LIST="${A_EPOCHS_LIST:-3}"
 B_EPOCHS_LIST="${B_EPOCHS_LIST:-1 3}"
 A_OPTIMIZERS="${A_OPTIMIZERS:-adamw}"
 B_OPTIMIZERS="${B_OPTIMIZERS:-adamw}"
+A_TARGET_LOSS="${A_TARGET_LOSS:-}"
+B_TARGET_LOSS="${B_TARGET_LOSS:-}"
 MASK_STAGES="${MASK_STAGES:-update}"
 
 # By default, SFT does not rerun for every A-retention ratio because the ratio
@@ -98,9 +100,11 @@ run_one() {
   A_EPOCHS="${a_epochs}" \
   A_LR="${a_lr}" \
   A_OPTIMIZER="${a_optimizer}" \
+  A_TARGET_LOSS="${A_TARGET_LOSS}" \
   B_EPOCHS="${b_epochs}" \
   B_LR="${b_lr}" \
   B_OPTIMIZER="${b_optimizer}" \
+  B_TARGET_LOSS="${B_TARGET_LOSS}" \
   B_METHOD="${b_method}" \
   MASK_STAGE="${mask_stage}" \
   B_RETENTION_RATIO="${ratio}" \
@@ -118,7 +122,7 @@ run_one() {
   MAX_B_RETENTION="${MAX_B_RETENTION}" \
   WANDB_PROJECT="${WANDB_PROJECT}" \
   WANDB_RUN_NAME="${run_name}" \
-  bash jax_sft/run_qwen3_0_6b_train_a_then_b.sh "${A_DATASET}" "${B_DATASET}"
+  bash jax_sft/_scripts/run_qwen3_0_6b_train_a_then_b.sh "${A_DATASET}" "${B_DATASET}"
 }
 
 echo "================ Qwen3 A-Ratio Practical Sweep ================"
@@ -135,6 +139,8 @@ echo "A_EPOCHS_LIST     : ${A_EPOCHS_LIST}"
 echo "B_EPOCHS_LIST     : ${B_EPOCHS_LIST}"
 echo "A_OPTIMIZERS      : ${A_OPTIMIZERS}"
 echo "B_OPTIMIZERS      : ${B_OPTIMIZERS}"
+echo "A_TARGET_LOSS     : ${A_TARGET_LOSS:-none}"
+echo "B_TARGET_LOSS     : ${B_TARGET_LOSS:-none}"
 echo "MASK_STAGES       : ${MASK_STAGES}"
 echo "RUN_SFT_PER_RATIO : ${RUN_SFT_PER_RATIO}"
 echo "WANDB_PROJECT     : ${WANDB_PROJECT}"

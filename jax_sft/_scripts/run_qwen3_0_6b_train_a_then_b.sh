@@ -22,11 +22,13 @@ A_EPOCHS="${A_EPOCHS:-1}"
 A_LR="${A_LR:-1e-6}"
 A_OPTIMIZER="${A_OPTIMIZER:-adamw}"
 A_WEIGHT_DECAY="${A_WEIGHT_DECAY:-1e-4}"
+A_TARGET_LOSS="${A_TARGET_LOSS:-}"
 
 B_EPOCHS="${B_EPOCHS:-1}"
 B_LR="${B_LR:-1e-6}"
 B_OPTIMIZER="${B_OPTIMIZER:-adamw}"
 B_WEIGHT_DECAY="${B_WEIGHT_DECAY:-1e-4}"
+B_TARGET_LOSS="${B_TARGET_LOSS:-}"
 B_METHOD="${B_METHOD:-${METHOD:-cnl}}"
 MASK_STAGE="${MASK_STAGE:-update}"
 REF_REFRESH_STEPS="${REF_REFRESH_STEPS:-0}"
@@ -123,6 +125,8 @@ echo "B_EVAL_JSONLS     : ${B_EVAL_FILES[*]}"
 echo "B_RETENTION_JSONLS: ${B_RETENTION_FILES[*]}"
 echo "A_EPOCHS/LR/OPT   : ${A_EPOCHS} / ${A_LR} / ${A_OPTIMIZER}"
 echo "B_EPOCHS/LR/OPT   : ${B_EPOCHS} / ${B_LR} / ${B_OPTIMIZER}"
+echo "A_TARGET_LOSS     : ${A_TARGET_LOSS:-none}"
+echo "B_TARGET_LOSS     : ${B_TARGET_LOSS:-none}"
 echo "B_METHOD          : ${B_METHOD}"
 echo "MASK_STAGE        : ${MASK_STAGE}"
 echo "B_RETENTION_FILTER: ${B_RETENTION_FILTER}"
@@ -176,6 +180,12 @@ if [[ -n "${PTX_DIR}" ]]; then
 fi
 if [[ -n "${MAX_A_TRAIN}" ]]; then
   FLAGS+=(--max_a_train "${MAX_A_TRAIN}")
+fi
+if [[ -n "${A_TARGET_LOSS}" ]]; then
+  FLAGS+=(--a_target_loss "${A_TARGET_LOSS}")
+fi
+if [[ -n "${B_TARGET_LOSS}" ]]; then
+  FLAGS+=(--b_target_loss "${B_TARGET_LOSS}")
 fi
 if [[ -n "${MAX_B_TRAIN}" ]]; then
   FLAGS+=(--max_b_train "${MAX_B_TRAIN}")

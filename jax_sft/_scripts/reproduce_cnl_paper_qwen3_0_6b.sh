@@ -90,7 +90,7 @@ for dataset in ${DATASETS}; do
     MAX_CORRECT="${MAX_CORRECT}" \
     WANDB_PROJECT="${WANDB_PROJECT}" \
     WANDB_RUN_NAME="${run_name}" \
-    bash jax_sft/run_qwen3_0_6b_split_train.sh "${dataset}"
+    bash jax_sft/_scripts/run_qwen3_0_6b_split_train.sh "${dataset}"
 
     first_for_dataset=0
   done

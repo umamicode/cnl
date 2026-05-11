@@ -24,6 +24,7 @@ WEIGHT_DECAY="${WEIGHT_DECAY:-1e-4}"
 MASK_STAGE="${MASK_STAGE:-gradient}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
 USE_FREEZE="${USE_FREEZE:-1}"
+METHOD_NAME="${METHOD_NAME:-}"
 OUT_ROOT="${OUT_ROOT:-jax_ckpts}"
 DATA_ROOT="${DATA_ROOT:-data}"
 
@@ -40,6 +41,13 @@ CORRECT_RATIO="${CORRECT_RATIO:-100}"
 CORRECT_SEED="${CORRECT_SEED:-0}"
 CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE:-random}"
 CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-subset}"
+SYNTHETIC_CORRECT_JSONLS="${SYNTHETIC_CORRECT_JSONLS:-}"
+SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS:-}"
+SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS:-}"
+SYNTHETIC_LABEL_MODE="${SYNTHETIC_LABEL_MODE:-argmax}"
+SYNTHETIC_TEMPERATURE="${SYNTHETIC_TEMPERATURE:-1.0}"
+SYNTHETIC_MIN_CONFIDENCE="${SYNTHETIC_MIN_CONFIDENCE:-0.0}"
+SYNTHETIC_SEED="${SYNTHETIC_SEED:-0}"
 
 # Optional W&B settings.
 WANDB_PROJECT="${WANDB_PROJECT:-}"
@@ -128,6 +136,7 @@ echo "OUT_WRONG     : ${OUT_WRONG}"
 echo "OUT_DIR       : ${OUT_DIR}"
 echo "LR            : ${LR}"
 echo "EPOCHS        : ${EPOCHS}"
+echo "METHOD_NAME   : ${METHOD_NAME:-auto}"
 echo "USE_FREEZE    : ${USE_FREEZE}"
 echo "OPTIMIZER     : ${OPTIMIZER}"
 echo "WEIGHT_DECAY  : ${WEIGHT_DECAY}"
@@ -138,6 +147,12 @@ echo "CORRECT_RATIO : ${CORRECT_RATIO}"
 echo "CORRECT_SEED  : ${CORRECT_SEED}"
 echo "CORRECT_SUBSET: ${CORRECT_SUBSET_MODE}"
 echo "CORRECT_EVAL  : ${CORRECT_EVAL_SCOPE}"
+if [[ -n "${SYNTHETIC_CORRECT_JSONLS}" ]]; then
+  echo "SYNTH_CORRECT : ${SYNTHETIC_CORRECT_JSONLS}"
+fi
+if [[ -n "${SYNTHETIC_CORRECT_SOURCE_JSONLS}" ]]; then
+  echo "SYNTH_SOURCE  : ${SYNTHETIC_CORRECT_SOURCE_JSONLS}"
+fi
 echo "====================================================="
 
 if [[ "${BACKEND}" == "ptx" ]]; then
@@ -160,6 +175,28 @@ if [[ "${BACKEND}" == "ptx" ]]; then
     --correct_seed "${CORRECT_SEED}"
     --correct_subset_mode "${CORRECT_SUBSET_MODE}"
     --correct_eval_scope "${CORRECT_EVAL_SCOPE}"
+  )
+  if [[ -n "${METHOD_NAME}" ]]; then
+    PTX_FLAGS+=(--method_name "${METHOD_NAME}")
+  fi
+  if [[ -n "${SYNTHETIC_CORRECT_JSONLS}" ]]; then
+    # shellcheck disable=SC2206
+    SYNTHETIC_CORRECT_FILES=(${SYNTHETIC_CORRECT_JSONLS})
+    PTX_FLAGS+=(--synthetic_correct_jsonl "${SYNTHETIC_CORRECT_FILES[@]}")
+  fi
+  if [[ -n "${SYNTHETIC_CORRECT_SOURCE_JSONLS}" ]]; then
+    # shellcheck disable=SC2206
+    SYNTHETIC_CORRECT_SOURCE_FILES=(${SYNTHETIC_CORRECT_SOURCE_JSONLS})
+    PTX_FLAGS+=(--synthetic_correct_source_jsonl "${SYNTHETIC_CORRECT_SOURCE_FILES[@]}")
+  fi
+  if [[ -n "${SYNTHETIC_CORRECT_MAX_ROWS}" ]]; then
+    PTX_FLAGS+=(--synthetic_correct_max_rows "${SYNTHETIC_CORRECT_MAX_ROWS}")
+  fi
+  PTX_FLAGS+=(
+    --synthetic_label_mode "${SYNTHETIC_LABEL_MODE}"
+    --synthetic_temperature "${SYNTHETIC_TEMPERATURE}"
+    --synthetic_min_confidence "${SYNTHETIC_MIN_CONFIDENCE}"
+    --synthetic_seed "${SYNTHETIC_SEED}"
   )
   if [[ -n "${PTX_DIR}" ]]; then
     PTX_FLAGS+=(--ptx_dir "${PTX_DIR}")

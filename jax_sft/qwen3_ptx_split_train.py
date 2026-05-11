@@ -38,6 +38,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--source_jsonl", type=str, nargs="+", required=True)
     p.add_argument("--out_correct_jsonl", type=str, required=True)
     p.add_argument("--out_wrong_jsonl", type=str, required=True)
+    p.add_argument(
+        "--synthetic_correct_jsonl",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional pseudo-labeled rows to use as the CNL reference set. "
+            "Evaluation still uses out_correct_jsonl/source split."
+        ),
+    )
+    p.add_argument(
+        "--synthetic_correct_source_jsonl",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Prompt bank to pseudo-label for cnl_synth. Defaults to source_jsonl.",
+    )
+    p.add_argument("--synthetic_correct_max_rows", type=int, default=None)
+    p.add_argument("--synthetic_label_mode", choices=["argmax", "sample"], default="argmax")
+    p.add_argument("--synthetic_temperature", type=float, default=1.0)
+    p.add_argument("--synthetic_min_confidence", type=float, default=0.0)
+    p.add_argument("--synthetic_seed", type=int, default=0)
     p.add_argument("--out_dir", type=str, required=True)
     p.add_argument(
         "--skip_split",
@@ -55,6 +77,7 @@ def parse_args() -> argparse.Namespace:
         help="Random fraction of correct/mastered rows to keep. Values >1 are interpreted as percentages.",
     )
     p.add_argument("--correct_seed", type=int, default=0)
+    p.add_argument("--method_name", choices=["sft", "cnl", "cnl_synth"], default=None)
     p.add_argument(
         "--correct_subset_mode",
         choices=["random", "nested"],
@@ -190,6 +213,18 @@ def tokenize_row(tokenizer: Any, row: dict[str, Any], max_length: int) -> dict[s
     }
 
 
+def tokenize_prompt(tokenizer: Any, question: str, max_length: int) -> dict[str, jax.Array] | None:
+    prompt = format_prompt(tokenizer, question)
+    ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+    if not ids or len(ids) >= max_length:
+        return None
+    pad = max_length - len(ids)
+    return {
+        "tokens": jnp.asarray([ids + [tokenizer.pad_token_id] * pad], dtype=jnp.int32),
+        "last_idx": jnp.asarray([len(ids) - 1], dtype=jnp.int32),
+    }
+
+
 def array_batch(batch: dict[str, Any]) -> dict[str, jax.Array]:
     return {
         "tokens": batch["tokens"],
@@ -224,6 +259,81 @@ def loss_for_batch(forward: Any, weights: Any, batch: dict[str, jax.Array]) -> j
 def predict_abcd(predict_logits_fn: Any, weights: Any, batch: dict[str, Any], cand_ids: np.ndarray) -> str:
     logits = np.asarray(predict_logits_fn(weights, array_batch(batch)))
     return "ABCD"[int(np.argmax(logits[cand_ids]))]
+
+
+def stable_softmax(x: np.ndarray) -> np.ndarray:
+    x = x.astype(np.float64)
+    x = x - np.max(x)
+    ex = np.exp(x)
+    return ex / np.sum(ex)
+
+
+def make_synthetic_correct_batches(
+    rows: list[dict[str, Any]],
+    tokenizer: Any,
+    weights: Any,
+    predict_logits_fn: Any,
+    cand_ids: np.ndarray,
+    max_length: int,
+    *,
+    label_mode: str,
+    temperature: float,
+    min_confidence: float,
+    seed: int,
+    out_jsonl: str,
+) -> list[dict[str, Any]]:
+    if temperature <= 0:
+        raise ValueError("--synthetic_temperature must be positive")
+    os.makedirs(os.path.dirname(out_jsonl) or ".", exist_ok=True)
+    rng = np.random.default_rng(seed)
+    batches = []
+    skipped = 0
+    low_conf = 0
+    with open(out_jsonl, "w", encoding="utf-8") as f:
+        for row in tqdm(rows, desc="make synthetic correct"):
+            question = row.get("question")
+            if not question:
+                skipped += 1
+                continue
+            prompt_batch = tokenize_prompt(tokenizer, question, max_length)
+            if prompt_batch is None:
+                skipped += 1
+                continue
+            logits = np.asarray(predict_logits_fn(weights, prompt_batch))[cand_ids]
+            probs = stable_softmax(logits / temperature)
+            if label_mode == "sample":
+                idx = int(rng.choice(np.arange(4), p=probs))
+            else:
+                idx = int(np.argmax(probs))
+            confidence = float(probs[idx])
+            if confidence < min_confidence:
+                low_conf += 1
+                continue
+            label = "ABCD"[idx]
+            synthetic_row = {
+                "label": label,
+                "question": question,
+                "predict_label": label,
+                "synthetic": True,
+                "synthetic_method": "qwen3_on_policy_pseudo_label",
+                "synthetic_label_mode": label_mode,
+                "synthetic_confidence": confidence,
+                "source_label": row.get("label"),
+                "source_predict_label": row.get("predict_label"),
+            }
+            batch = tokenize_row(tokenizer, synthetic_row, max_length)
+            if batch is None:
+                skipped += 1
+                continue
+            batches.append(batch)
+            write_jsonl_line(f, synthetic_row)
+
+    print("========== Synthetic Correct Summary ==========")
+    print(f"Source rows    : {len(rows)}")
+    print(f"Kept           : {len(batches)}")
+    print(f"Skipped        : {skipped}")
+    print(f"Low confidence : {low_conf}")
+    return batches
 
 
 def split_rows(
@@ -298,6 +408,14 @@ def configure_wandb_mode(mode: str | None) -> None:
         os.environ.pop("WANDB_MODE", None)
 
 
+def effective_method(args: argparse.Namespace) -> str:
+    if args.method_name:
+        return args.method_name
+    if not args.use_freeze:
+        return "sft"
+    return "cnl_synth" if args.synthetic_correct_jsonl else "cnl"
+
+
 def maybe_init_wandb(
     args: argparse.Namespace,
     n_wrong: int,
@@ -309,13 +427,16 @@ def maybe_init_wandb(
     import wandb
 
     configure_wandb_mode(args.wandb_mode)
+    method = effective_method(args)
     return wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
         name=args.wandb_run_name,
         config={
             **vars(args),
-            "method": "cnl" if args.use_freeze else "sft",
+            "method": method,
+            "method_id": {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1),
+            "is_cnl": int(method.startswith("cnl")),
             "wrong_rows": n_wrong,
             "correct_rows": n_correct_eval,
             "correct_eval_rows": n_correct_eval,
@@ -431,9 +552,45 @@ def main() -> None:
         correct_batches = correct_batches[: args.max_correct]
     if args.max_wrong is not None:
         wrong_batches = wrong_batches[: args.max_wrong]
+    jsonl_dir = Path(args.out_dir) / "jsonl"
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
     correct_eval_batches = list(correct_batches)
+    if args.synthetic_correct_jsonl:
+        synthetic_rows = load_jsonl(args.synthetic_correct_jsonl, None)
+        correct_ref_source_batches = [
+            batch
+            for row in tqdm(synthetic_rows, desc="tokenize synthetic correct")
+            if (batch := tokenize_row(model.tokenizer, row, args.max_length)) is not None
+        ]
+        if not correct_ref_source_batches:
+            raise ValueError("synthetic correct/reference set is empty")
+    elif effective_method(args) == "cnl_synth":
+        source_paths = args.synthetic_correct_source_jsonl or args.source_jsonl
+        synthetic_max_rows = (
+            args.synthetic_correct_max_rows
+            if args.synthetic_correct_max_rows is not None
+            else args.max_rows
+        )
+        synthetic_rows = load_jsonl(source_paths, synthetic_max_rows)
+        correct_ref_source_batches = make_synthetic_correct_batches(
+            synthetic_rows,
+            model.tokenizer,
+            weights,
+            predict_logits_fn,
+            cand_ids,
+            args.max_length,
+            label_mode=args.synthetic_label_mode,
+            temperature=args.synthetic_temperature,
+            min_confidence=args.synthetic_min_confidence,
+            seed=args.synthetic_seed,
+            out_jsonl=str(jsonl_dir / "synthetic_correct_reference.jsonl"),
+        )
+        if not correct_ref_source_batches:
+            raise ValueError("synthetic correct/reference set is empty")
+    else:
+        correct_ref_source_batches = correct_batches
     correct_ref_batches = subset_items(
-        correct_batches,
+        correct_ref_source_batches,
         args.correct_ratio,
         args.correct_seed,
         args.correct_subset_mode,
@@ -467,12 +624,12 @@ def main() -> None:
         return w, state, loss
 
     train_step_fn = jax.jit(train_step if args.use_freeze else plain_step, donate_argnums=(0, 1))
-    jsonl_dir = Path(args.out_dir) / "jsonl"
-    jsonl_dir.mkdir(parents=True, exist_ok=True)
     summary_csv = str(Path(args.out_dir) / "summary.csv")
     header = [
         "epoch",
         "method",
+        "method_id",
+        "is_cnl",
         "use_freeze",
         "correct_ratio",
         "correct_seed",
@@ -491,13 +648,16 @@ def main() -> None:
         "n_correct",
     ]
     final_metrics = None
-    method = "cnl" if args.use_freeze else "sft"
+    method = effective_method(args)
+    method_id = {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1)
     correct_ratio = normalize_ratio(args.correct_ratio)
 
     def annotate_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         metrics.update(
             {
                 "method": method,
+                "method_id": method_id,
+                "is_cnl": int(method.startswith("cnl")),
                 "use_freeze": args.use_freeze,
                 "correct_ratio": correct_ratio,
                 "correct_seed": args.correct_seed,
