@@ -100,9 +100,19 @@ def parse_args() -> argparse.Namespace:
         "--b_retention_ratio",
         type=float,
         default=1.0,
-        help="Random fraction of B-stage A-retention rows to keep. Values >1 are interpreted as percentages.",
+        help="Fraction of B-stage A-retention/reference rows to keep. Values >1 are interpreted as percentages.",
     )
     p.add_argument("--b_retention_seed", type=int, default=0)
+    p.add_argument(
+        "--b_retention_subset_mode",
+        choices=["random", "nested"],
+        default="random",
+        help=(
+            "How to select B-stage retention/reference rows. 'random' keeps "
+            "legacy independent subsets; 'nested' uses a seed-specific "
+            "permutation prefix so larger ratios contain smaller ratios."
+        ),
+    )
 
     p.add_argument("--a_epochs", type=int, default=1)
     p.add_argument("--a_lr", type=float, default=1e-7)
@@ -187,15 +197,27 @@ def normalize_ratio(ratio: float) -> float:
     return ratio
 
 
-def random_subset_rows(rows: list[dict[str, Any]], ratio: float, seed: int, desc: str) -> list[dict[str, Any]]:
+def subset_rows(
+    rows: list[dict[str, Any]],
+    ratio: float,
+    seed: int,
+    mode: str,
+    desc: str,
+) -> list[dict[str, Any]]:
     ratio = normalize_ratio(ratio)
     if ratio >= 1 or not rows:
-        print(f"{desc}: ratio=1.0 kept={len(rows)}/{len(rows)}")
+        print(f"{desc}: ratio=1.0 mode={mode} kept={len(rows)}/{len(rows)}")
         return rows
     n_keep = max(1, int(round(len(rows) * ratio)))
     rng = np.random.default_rng(seed)
-    indices = sorted(rng.choice(len(rows), size=n_keep, replace=False).tolist())
-    print(f"{desc}: ratio={ratio:.4f} seed={seed} kept={n_keep}/{len(rows)}")
+    if mode == "random":
+        indices = rng.choice(len(rows), size=n_keep, replace=False).tolist()
+    elif mode == "nested":
+        indices = rng.permutation(len(rows))[:n_keep].tolist()
+    else:
+        raise ValueError(f"unknown subset mode: {mode}")
+    indices = sorted(indices)
+    print(f"{desc}: ratio={ratio:.4f} seed={seed} mode={mode} kept={n_keep}/{len(rows)}")
     return [rows[i] for i in indices]
 
 
@@ -353,6 +375,8 @@ def main() -> None:
     if args.synthetic_b_retention:
         print("SYNTHETIC_SOURCE_JSONL:", synthetic_source_paths)
     print("B_METHOD:", args.b_method)
+    print("B_RETENTION_RATIO:", args.b_retention_ratio)
+    print("B_RETENTION_SUBSET_MODE:", args.b_retention_subset_mode)
 
     model = qwen.load(
         args.model_name,
@@ -382,6 +406,8 @@ def main() -> None:
         "synthetic_b_retention",
         "b_retention_ratio",
         "b_retention_seed",
+        "b_retention_subset_mode",
+        "b_retention_ref_rows",
         "a_lr",
         "b_lr",
         "a_optimizer",
@@ -434,6 +460,7 @@ def main() -> None:
         "b_eval_rows": len(b_eval_batches),
         "b_retention_ratio": b_retention_ratio,
         "b_retention_seed": args.b_retention_seed,
+        "b_retention_subset_mode": args.b_retention_subset_mode,
     }
     wandb_run = maybe_init_wandb(args, counts)
     method = method_label(args)
@@ -484,6 +511,8 @@ def main() -> None:
                 "synthetic_b_retention": args.synthetic_b_retention,
                 "b_retention_ratio": b_retention_ratio,
                 "b_retention_seed": args.b_retention_seed,
+                "b_retention_subset_mode": args.b_retention_subset_mode,
+                "b_retention_ref_rows": b_retention_ref_rows,
                 "a_lr": args.a_lr,
                 "b_lr": args.b_lr,
                 "a_optimizer": args.a_optimizer,
@@ -497,6 +526,7 @@ def main() -> None:
     b_before_b_acc = None
     a_after_a_loss = None
     b_before_b_loss = None
+    b_retention_ref_rows = 0
     global_step = 0
     final_metrics = None
 
@@ -578,12 +608,13 @@ def main() -> None:
     else:
         if args.max_b_retention is not None:
             b_retention_rows = b_retention_rows[: args.max_b_retention]
-        b_retention_rows = random_subset_rows(
-            b_retention_rows,
-            b_retention_ratio,
-            args.b_retention_seed,
-            "subset B-stage A-retention rows",
-        )
+    b_retention_rows = subset_rows(
+        b_retention_rows,
+        b_retention_ratio,
+        args.b_retention_seed,
+        args.b_retention_subset_mode,
+        "subset B-stage A-retention rows",
+    )
     b_train_batches = filter_batches(
         b_train_rows,
         model.tokenizer,
@@ -612,9 +643,14 @@ def main() -> None:
         raise ValueError("B train set is empty after filtering")
     if args.b_method == "cnl" and not b_retention_batches:
         raise ValueError("B-stage CNL requested but retention/reference set is empty")
+    b_retention_ref_rows = len(b_retention_batches)
     if wandb_run is not None:
         wandb_run.config.update(
-            {"b_train_rows": len(b_train_batches), "b_retention_rows": len(b_retention_batches)},
+            {
+                "b_train_rows": len(b_train_batches),
+                "b_retention_rows": len(b_retention_batches),
+                "b_retention_ref_rows": b_retention_ref_rows,
+            },
             allow_val_change=True,
         )
 

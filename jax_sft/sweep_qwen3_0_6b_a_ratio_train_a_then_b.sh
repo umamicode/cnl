@@ -3,12 +3,13 @@ set -euo pipefail
 
 # Practical A-then-B sweep over how much real A data CNL can use during B.
 #
-# Stage A always trains on A first. A_RETENTION_RATIOS controls the random
-# subset of A available as the B-stage CNL retention/reference set.
+# Stage A always trains on A first. A_RETENTION_RATIOS controls the subset of
+# A available as the B-stage CNL retention/reference set. A evaluation remains
+# fixed on the full A eval set, so ratios are comparable.
 #
 # Methods:
 #   sft = train A, then plain finetune on B
-#   cnl = train A, then CNL on B using a random ratio of real A
+#   cnl = train A, then CNL on B using a ratio of real A
 
 A_DATASET="${A_DATASET:-${1:-csqa}}"
 B_DATASET="${B_DATASET:-${2:-medqa}}"
@@ -18,6 +19,7 @@ MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 METHODS="${METHODS:-sft cnl}"
 A_RETENTION_RATIOS="${A_RETENTION_RATIOS:-10 20 40 60 80 100}"
 A_RETENTION_SEEDS="${A_RETENTION_SEEDS:-0}"
+A_RETENTION_SUBSET_MODE="${A_RETENTION_SUBSET_MODE:-nested}"
 
 LR_GRID="${LR_GRID:-5e-7 1e-6 2e-6}"
 A_LRS="${A_LRS:-${LR_GRID}}"
@@ -33,8 +35,8 @@ MASK_STAGES="${MASK_STAGES:-update}"
 # SFT runs per ratio for plotting convenience.
 RUN_SFT_PER_RATIO="${RUN_SFT_PER_RATIO:-0}"
 
-WANDB_PROJECT="${WANDB_PROJECT:-cnl-practical-a-ratio}"
-SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-a_ratio-${A_DATASET}-to-${B_DATASET}}"
+WANDB_PROJECT="${WANDB_PROJECT:-cnl-practical-a-ratio-fixed-eval}"
+SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-a_ratio-fixed-eval-${A_DATASET}-to-${B_DATASET}}"
 OUT_ROOT="${OUT_ROOT:-jax_ckpts/sweeps/${SWEEP_NAME}}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
 
@@ -71,8 +73,8 @@ run_one() {
     exit 1
   fi
 
-  local run_name="${SWEEP_NAME}-${method}-ar${ratio}-seed${seed}-alr${a_lr}-blr${b_lr}-aep${a_epochs}-bep${b_epochs}-aopt${a_optimizer}-bopt${b_optimizer}-mask${run_mask}"
-  local out_dir="${OUT_ROOT}/${method}_ar${ratio}_seed${seed}_alr${a_lr}_blr${b_lr}_aep${a_epochs}_bep${b_epochs}_aopt${a_optimizer}_bopt${b_optimizer}_mask${run_mask}"
+  local run_name="${SWEEP_NAME}-${method}-ar${ratio}-seed${seed}-sub${A_RETENTION_SUBSET_MODE}-alr${a_lr}-blr${b_lr}-aep${a_epochs}-bep${b_epochs}-aopt${a_optimizer}-bopt${b_optimizer}-mask${run_mask}"
+  local out_dir="${OUT_ROOT}/${method}_ar${ratio}_seed${seed}_sub${A_RETENTION_SUBSET_MODE}_alr${a_lr}_blr${b_lr}_aep${a_epochs}_bep${b_epochs}_aopt${a_optimizer}_bopt${b_optimizer}_mask${run_mask}"
 
   echo
   echo "================ A-Ratio Sweep Run ================"
@@ -80,6 +82,7 @@ run_one() {
   echo "METHOD   : ${method}"
   echo "A_RATIO  : ${ratio}"
   echo "SEED     : ${seed}"
+  echo "SUBSET   : ${A_RETENTION_SUBSET_MODE}"
   echo "A_LR/EP  : ${a_lr} / ${a_epochs}"
   echo "B_LR/EP  : ${b_lr} / ${b_epochs}"
   echo "A_OPT    : ${a_optimizer}"
@@ -102,6 +105,7 @@ run_one() {
   MASK_STAGE="${mask_stage}" \
   B_RETENTION_RATIO="${ratio}" \
   B_RETENTION_SEED="${seed}" \
+  B_RETENTION_SUBSET_MODE="${A_RETENTION_SUBSET_MODE}" \
   SYNTHETIC_B_RETENTION="0" \
   REF_REFRESH_STEPS="${REF_REFRESH_STEPS}" \
   B_RETENTION_FILTER="${B_RETENTION_FILTER}" \
@@ -124,6 +128,7 @@ echo "MODEL_NAME        : ${MODEL_NAME}"
 echo "METHODS           : ${METHODS}"
 echo "A_RETENTION_RATIOS: ${A_RETENTION_RATIOS}"
 echo "A_RETENTION_SEEDS : ${A_RETENTION_SEEDS}"
+echo "A_RETENTION_SUBSET: ${A_RETENTION_SUBSET_MODE}"
 echo "A_LRS             : ${A_LRS}"
 echo "B_LRS             : ${B_LRS}"
 echo "A_EPOCHS_LIST     : ${A_EPOCHS_LIST}"

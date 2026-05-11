@@ -3,8 +3,10 @@ set -euo pipefail
 
 # Paper-style correct/mastered-data ratio sweep for Qwen3-0.6B.
 #
-# This sweeps normal training hyperparameters plus how much of the
-# initially-correct set CNL can use as its reference set.
+# This sweeps normal training hyperparameters plus how much of the initially
+# correct/mastered set CNL can use as its reference set. By default, retention
+# is always evaluated on the full initially-correct set, so correct_ratio
+# changes only CNL's reference data and points are comparable across ratios.
 #
 # Example:
 #   WANDB_PROJECT=cnl-repro-correct-ratio \
@@ -17,8 +19,8 @@ MODEL_TAG="${MODEL_TAG:-$(printf '%s' "${MODEL_NAME}" | tr '/:' '__')}"
 
 CORRECT_RATIOS="${CORRECT_RATIOS:-10 20 40 60 80 100}"
 CORRECT_SEEDS="${CORRECT_SEEDS:-0}"
-CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE:-random}"
-CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-subset}"
+CORRECT_SUBSET_MODE="${CORRECT_SUBSET_MODE:-nested}"
+CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-all}"
 
 LRS="${LRS:-${LR:-1e-8 2e-8 5e-8 1e-7 2e-7 5e-7 1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4}}"
 EPOCHS_LIST="${EPOCHS_LIST:-${EPOCHS:-1 2 3}}"
@@ -31,10 +33,10 @@ MAX_LENGTH="${MAX_LENGTH:-256}"
 # Set RUN_SFT_PER_RATIO=1 for matched duplicate SFT points per ratio.
 RUN_SFT_PER_RATIO="${RUN_SFT_PER_RATIO:-0}"
 
-WANDB_PROJECT="${WANDB_PROJECT:-cnl-repro-correct-ratio}"
+WANDB_PROJECT="${WANDB_PROJECT:-cnl-repro-correct-ratio-fixed-eval}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 WANDB_MODE="${WANDB_MODE:-}"
-SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-correct-ratio}"
+SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-correct-ratio-fixed-eval}"
 OUT_ROOT="${OUT_ROOT:-jax_ckpts/sweeps/${SWEEP_NAME}}"
 DATA_ROOT="${DATA_ROOT:-data}"
 
@@ -74,6 +76,8 @@ run_one() {
   echo "METHOD       : ${method}"
   echo "CORRECT_RATIO: ${ratio}"
   echo "CORRECT_SEED : ${seed}"
+  echo "CORRECT_SUBSET: ${CORRECT_SUBSET_MODE}"
+  echo "CORRECT_EVAL  : ${CORRECT_EVAL_SCOPE}"
   echo "LR/EPOCHS    : ${lr} / ${epochs}"
   echo "OPT/MASK     : ${optimizer} / ${run_mask}"
   echo "SKIP_SPLIT   : ${skip_split}"
