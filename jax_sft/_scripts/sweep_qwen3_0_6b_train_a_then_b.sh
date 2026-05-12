@@ -26,6 +26,8 @@ B_OPTIMIZERS="${B_OPTIMIZERS:-adamw}"
 A_TARGET_LOSS="${A_TARGET_LOSS:-}"
 B_TARGET_LOSS="${B_TARGET_LOSS:-}"
 MASK_STAGES="${MASK_STAGES:-update}"
+CNL_MARGINS="${CNL_MARGINS:-1e-12 1e-10}"
+CNL_LEAKS="${CNL_LEAKS:-0.01 0.05}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-cnl-practical}"
 SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-a_then_b-${A_DATASET}-to-${B_DATASET}}"
@@ -60,22 +62,44 @@ run_one() {
   local a_optimizer="$6"
   local b_optimizer="$7"
   local mask_stage="$8"
+  local cnl_margin="${9:-0.0}"
+  local cnl_leak="${10:-0.0}"
 
   local b_method="cnl"
   local synthetic_b_retention="0"
   local run_mask="${mask_stage}"
+  local cnl_mask_mode="hard"
+  local relax_suffix=""
   if [[ "${method}" == "sft" ]]; then
     b_method="sft"
     run_mask="none"
   elif [[ "${method}" == "cnl_synth" ]]; then
     synthetic_b_retention="1"
+  elif [[ "${method}" == "cnl_margin" ]]; then
+    b_method="cnl_margin"
+    cnl_mask_mode="margin"
+    relax_suffix="-margin${cnl_margin}"
+  elif [[ "${method}" == "cnl_leaky" ]]; then
+    b_method="cnl_leaky"
+    cnl_mask_mode="leaky"
+    relax_suffix="-leak${cnl_leak}"
+  elif [[ "${method}" == "cnl_margin_synth" ]]; then
+    b_method="cnl_margin_synth"
+    synthetic_b_retention="1"
+    cnl_mask_mode="margin"
+    relax_suffix="-margin${cnl_margin}"
+  elif [[ "${method}" == "cnl_leaky_synth" ]]; then
+    b_method="cnl_leaky_synth"
+    synthetic_b_retention="1"
+    cnl_mask_mode="leaky"
+    relax_suffix="-leak${cnl_leak}"
   elif [[ "${method}" != "cnl" ]]; then
     echo "Unknown method: ${method}" >&2
     exit 1
   fi
 
-  local run_name="${SWEEP_NAME}-${method}-alr${a_lr}-blr${b_lr}-aep${a_epochs}-bep${b_epochs}-aopt${a_optimizer}-bopt${b_optimizer}-mask${run_mask}"
-  local out_dir="${OUT_ROOT}/${method}_alr${a_lr}_blr${b_lr}_aep${a_epochs}_bep${b_epochs}_aopt${a_optimizer}_bopt${b_optimizer}_mask${run_mask}"
+  local run_name="${SWEEP_NAME}-${method}${relax_suffix}-alr${a_lr}-blr${b_lr}-aep${a_epochs}-bep${b_epochs}-aopt${a_optimizer}-bopt${b_optimizer}-mask${run_mask}"
+  local out_dir="${OUT_ROOT}/${method}${relax_suffix}_alr${a_lr}_blr${b_lr}_aep${a_epochs}_bep${b_epochs}_aopt${a_optimizer}_bopt${b_optimizer}_mask${run_mask}"
 
   echo
   echo "================ Practical Sweep Run ================"
@@ -86,6 +110,9 @@ run_one() {
   echo "A_OPT    : ${a_optimizer}"
   echo "B_OPT    : ${b_optimizer}"
   echo "MASK     : ${run_mask}"
+  echo "CNL_MODE : ${cnl_mask_mode}"
+  echo "CNL_MARGIN: ${cnl_margin}"
+  echo "CNL_LEAK : ${cnl_leak}"
   echo "OUT_DIR  : ${out_dir}"
   echo "====================================================="
 
@@ -103,6 +130,9 @@ run_one() {
   B_TARGET_LOSS="${B_TARGET_LOSS}" \
   B_METHOD="${b_method}" \
   MASK_STAGE="${mask_stage}" \
+  CNL_MASK_MODE="${cnl_mask_mode}" \
+  CNL_MARGIN="${cnl_margin}" \
+  CNL_LEAK="${cnl_leak}" \
   B_RETENTION_RATIO="${B_RETENTION_RATIO}" \
   B_RETENTION_SEED="${B_RETENTION_SEED}" \
   B_RETENTION_SUBSET_MODE="${B_RETENTION_SUBSET_MODE}" \
@@ -140,6 +170,8 @@ echo "B_OPTIMIZERS   : ${B_OPTIMIZERS}"
 echo "A_TARGET_LOSS  : ${A_TARGET_LOSS:-none}"
 echo "B_TARGET_LOSS  : ${B_TARGET_LOSS:-none}"
 echo "MASK_STAGES    : ${MASK_STAGES}"
+echo "CNL_MARGINS    : ${CNL_MARGINS}"
+echo "CNL_LEAKS      : ${CNL_LEAKS}"
 echo "B_RET_RATIO    : ${B_RETENTION_RATIO}"
 echo "B_RET_SEED     : ${B_RETENTION_SEED}"
 echo "B_RET_SUBSET   : ${B_RETENTION_SUBSET_MODE}"
@@ -155,10 +187,34 @@ for a_lr in ${A_LRS}; do
           for b_optimizer in ${B_OPTIMIZERS}; do
             for method in ${METHODS}; do
               if [[ "${method}" == "sft" ]]; then
-                run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "update"
+                run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "update" "0.0" "0.0"
+              elif [[ "${method}" == "cnl_margin" ]]; then
+                for cnl_margin in ${CNL_MARGINS}; do
+                  for mask_stage in ${MASK_STAGES}; do
+                    run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}" "${cnl_margin}" "0.0"
+                  done
+                done
+              elif [[ "${method}" == "cnl_leaky" ]]; then
+                for cnl_leak in ${CNL_LEAKS}; do
+                  for mask_stage in ${MASK_STAGES}; do
+                    run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}" "0.0" "${cnl_leak}"
+                  done
+                done
+              elif [[ "${method}" == "cnl_margin_synth" ]]; then
+                for cnl_margin in ${CNL_MARGINS}; do
+                  for mask_stage in ${MASK_STAGES}; do
+                    run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}" "${cnl_margin}" "0.0"
+                  done
+                done
+              elif [[ "${method}" == "cnl_leaky_synth" ]]; then
+                for cnl_leak in ${CNL_LEAKS}; do
+                  for mask_stage in ${MASK_STAGES}; do
+                    run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}" "0.0" "${cnl_leak}"
+                  done
+                done
               else
                 for mask_stage in ${MASK_STAGES}; do
-                  run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}"
+                  run_one "${method}" "${a_lr}" "${b_lr}" "${a_epochs}" "${b_epochs}" "${a_optimizer}" "${b_optimizer}" "${mask_stage}" "0.0" "0.0"
                 done
               fi
             done

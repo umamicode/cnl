@@ -135,8 +135,20 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional B-stage stop condition. B training stops early once B eval loss is <= this value.",
     )
-    p.add_argument("--b_method", choices=["cnl", "sft"], default="cnl")
+    p.add_argument(
+        "--b_method",
+        choices=["cnl", "sft", "cnl_margin", "cnl_leaky", "cnl_margin_synth", "cnl_leaky_synth"],
+        default="cnl",
+    )
     p.add_argument("--mask_stage", choices=["gradient", "update"], default="update")
+    p.add_argument(
+        "--cnl_mask_mode",
+        choices=["hard", "margin", "leaky"],
+        default="hard",
+        help="Relaxation for CNL during B-stage training. cnl_margin/cnl_leaky override this.",
+    )
+    p.add_argument("--cnl_margin", type=float, default=0.0)
+    p.add_argument("--cnl_leak", type=float, default=0.0)
     p.add_argument(
         "--b_retention_filter",
         choices=["none", "correct", "wrong"],
@@ -182,6 +194,7 @@ def maybe_init_wandb(args: argparse.Namespace, counts: dict[str, int]) -> Any | 
             "method": method,
             "method_id": method_id(method),
             "is_cnl": int(method.startswith("cnl")),
+            "effective_cnl_mask_mode": effective_cnl_mask_mode(args),
             "jax_devices": len(jax.devices()),
         },
     )
@@ -195,11 +208,31 @@ def write_stage_json(path: str, metrics: dict[str, Any]) -> None:
 
 
 def method_label(args: argparse.Namespace) -> str:
-    return "cnl_synth" if args.b_method == "cnl" and args.synthetic_b_retention else args.b_method
+    if args.b_method in ("cnl_margin_synth", "cnl_leaky_synth"):
+        return args.b_method
+    if args.synthetic_b_retention and args.b_method.startswith("cnl"):
+        return "cnl_synth" if args.b_method == "cnl" else f"{args.b_method}_synth"
+    return args.b_method
 
 
 def method_id(method: str) -> int:
-    return {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1)
+    return {
+        "sft": 0,
+        "cnl": 1,
+        "cnl_synth": 2,
+        "cnl_margin": 3,
+        "cnl_leaky": 4,
+        "cnl_margin_synth": 5,
+        "cnl_leaky_synth": 6,
+    }.get(method, -1)
+
+
+def effective_cnl_mask_mode(args: argparse.Namespace) -> str:
+    if args.b_method in ("cnl_margin", "cnl_margin_synth"):
+        return "margin"
+    if args.b_method in ("cnl_leaky", "cnl_leaky_synth"):
+        return "leaky"
+    return args.cnl_mask_mode
 
 
 def normalize_ratio(ratio: float) -> float:
@@ -387,6 +420,9 @@ def main() -> None:
     if args.synthetic_b_retention:
         print("SYNTHETIC_SOURCE_JSONL:", synthetic_source_paths)
     print("B_METHOD:", args.b_method)
+    print("CNL_MASK_MODE:", effective_cnl_mask_mode(args))
+    print("CNL_MARGIN:", args.cnl_margin)
+    print("CNL_LEAK:", args.cnl_leak)
     print("B_RETENTION_RATIO:", args.b_retention_ratio)
     print("B_RETENTION_SUBSET_MODE:", args.b_retention_subset_mode)
 
@@ -427,6 +463,9 @@ def main() -> None:
         "a_target_loss",
         "b_target_loss",
         "mask_stage",
+        "effective_cnl_mask_mode",
+        "cnl_margin",
+        "cnl_leak",
         "global_step",
         "a_epoch",
         "b_epoch",
@@ -533,7 +572,10 @@ def main() -> None:
                 "b_optimizer": args.b_optimizer,
                 "a_target_loss": args.a_target_loss if args.a_target_loss is not None else "",
                 "b_target_loss": args.b_target_loss if args.b_target_loss is not None else "",
-                "mask_stage": args.mask_stage if args.b_method == "cnl" else "none",
+                "mask_stage": args.mask_stage if args.b_method.startswith("cnl") else "none",
+                "effective_cnl_mask_mode": effective_cnl_mask_mode(args) if args.b_method.startswith("cnl") else "",
+                "cnl_margin": args.cnl_margin if args.b_method == "cnl_margin" else "",
+                "cnl_leak": args.cnl_leak if args.b_method == "cnl_leaky" else "",
             }
         )
         return metrics
@@ -663,7 +705,7 @@ def main() -> None:
     )
     if not b_train_batches:
         raise ValueError("B train set is empty after filtering")
-    if args.b_method == "cnl" and not b_retention_batches:
+    if args.b_method.startswith("cnl") and not b_retention_batches:
         raise ValueError("B-stage CNL requested but retention/reference set is empty")
     b_retention_ref_rows = len(b_retention_batches)
     if wandb_run is not None:
@@ -681,7 +723,7 @@ def main() -> None:
 
     def b_train_step(w, state, batch, ref_grads):
         loss, grads = loss_grad_fn(w, batch)
-        if args.b_method == "cnl":
+        if args.b_method.startswith("cnl"):
             w, state, _ = cnl_optax_step(
                 w,
                 grads,
@@ -689,6 +731,9 @@ def main() -> None:
                 b_optimizer,
                 state,
                 mask_stage=args.mask_stage,
+                mask_mode=effective_cnl_mask_mode(args),
+                margin=args.cnl_margin,
+                leak=args.cnl_leak,
             )
         else:
             updates, state = b_optimizer.update(grads, state, w)
@@ -699,11 +744,11 @@ def main() -> None:
 
     for ep in range(1, args.b_epochs + 1):
         print(f"\n===== Stage B: train on B epoch {ep}/{args.b_epochs} ({args.b_method}) =====")
-        ref_grads = mean_grad_retention(weights, b_retention_batches, loss_grad_fn) if args.b_method == "cnl" else None
+        ref_grads = mean_grad_retention(weights, b_retention_batches, loss_grad_fn) if args.b_method.startswith("cnl") else None
         loss_sum = 0.0
         for batch in tqdm(b_train_batches, desc=f"train B ep{ep}"):
             if (
-                args.b_method == "cnl"
+                args.b_method.startswith("cnl")
                 and args.ref_refresh_steps > 0
                 and global_step > 0
                 and global_step % args.ref_refresh_steps == 0

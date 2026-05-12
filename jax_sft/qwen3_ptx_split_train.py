@@ -98,7 +98,19 @@ def parse_args() -> argparse.Namespace:
         help="Random fraction of correct/mastered rows to keep. Values >1 are interpreted as percentages.",
     )
     p.add_argument("--correct_seed", type=int, default=0)
-    p.add_argument("--method_name", choices=["sft", "cnl", "cnl_synth"], default=None)
+    p.add_argument(
+        "--method_name",
+        choices=[
+            "sft",
+            "cnl",
+            "cnl_synth",
+            "cnl_margin",
+            "cnl_leaky",
+            "cnl_margin_synth",
+            "cnl_leaky_synth",
+        ],
+        default=None,
+    )
     p.add_argument(
         "--correct_subset_mode",
         choices=["random", "nested"],
@@ -125,6 +137,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--use_freeze", type=int, choices=[0, 1], default=1)
     p.add_argument("--mask_stage", choices=["gradient", "update"], default="gradient")
+    p.add_argument(
+        "--cnl_mask_mode",
+        choices=["hard", "margin", "leaky"],
+        default="hard",
+        help="Relaxation for the CNL mask. Method names cnl_margin/cnl_leaky override this.",
+    )
+    p.add_argument(
+        "--cnl_margin",
+        type=float,
+        default=0.0,
+        help="Margin CNL keeps coordinates with similarity >= -cnl_margin.",
+    )
+    p.add_argument(
+        "--cnl_leak",
+        type=float,
+        default=0.0,
+        help="Leaky CNL scales conflicting coordinates by this factor instead of freezing them.",
+    )
     p.add_argument("--tp_size", type=int, default=None)
     p.add_argument("--dp_shard", action="store_true")
     p.add_argument("--eval_before_train", type=int, choices=[0, 1], default=1)
@@ -544,6 +574,73 @@ def effective_method(args: argparse.Namespace) -> str:
     return "cnl_synth" if args.synthetic_correct_jsonl else "cnl"
 
 
+def method_id(method: str) -> int:
+    return {
+        "sft": 0,
+        "cnl": 1,
+        "cnl_synth": 2,
+        "cnl_margin": 3,
+        "cnl_leaky": 4,
+        "cnl_margin_synth": 5,
+        "cnl_leaky_synth": 6,
+    }.get(method, -1)
+
+
+def effective_cnl_mask_mode(args: argparse.Namespace) -> str:
+    method = effective_method(args)
+    if method in ("cnl_margin", "cnl_margin_synth"):
+        return "margin"
+    if method in ("cnl_leaky", "cnl_leaky_synth"):
+        return "leaky"
+    return args.cnl_mask_mode
+
+
+def uses_synthetic_reference(args: argparse.Namespace) -> bool:
+    return effective_method(args).endswith("_synth")
+
+
+def method_variant(args: argparse.Namespace) -> str:
+    method = effective_method(args)
+    if method == "cnl_margin":
+        return f"{method}_m{args.cnl_margin:g}"
+    if method == "cnl_leaky":
+        return f"{method}_a{args.cnl_leak:g}"
+    if method == "cnl_synth":
+        return f"{method}_{args.synthetic_correct_size_match}"
+    if method == "cnl_margin_synth":
+        return f"{method}_{args.synthetic_correct_size_match}_m{args.cnl_margin:g}"
+    if method == "cnl_leaky_synth":
+        return f"{method}_{args.synthetic_correct_size_match}_a{args.cnl_leak:g}"
+    return method
+
+
+def method_variant_id(args: argparse.Namespace) -> int:
+    method = effective_method(args)
+    if not uses_synthetic_reference(args):
+        return method_id(method)
+    size_offset = {
+        "fixed": 0,
+        "correct": 1,
+        "wrong": 2,
+    }.get(args.synthetic_correct_size_match, 0)
+    return {
+        "cnl_synth": 20,
+        "cnl_margin_synth": 50,
+        "cnl_leaky_synth": 60,
+    }.get(method, 90) + size_offset
+
+
+def wandb_tags(args: argparse.Namespace) -> list[str]:
+    method = effective_method(args)
+    tags = [f"method:{method}", f"variant:{method_variant(args)}"]
+    if uses_synthetic_reference(args):
+        tags.append(f"synth_size:{args.synthetic_correct_size_match}")
+        tags.append(f"synth_mode:{args.synthetic_correct_mode}")
+    if method.startswith("cnl"):
+        tags.append(f"cnl_mask:{effective_cnl_mask_mode(args)}")
+    return tags
+
+
 def maybe_init_wandb(
     args: argparse.Namespace,
     n_wrong: int,
@@ -560,11 +657,15 @@ def maybe_init_wandb(
         project=args.wandb_project,
         entity=args.wandb_entity,
         name=args.wandb_run_name,
+        tags=wandb_tags(args),
         config={
             **vars(args),
             "method": method,
-            "method_id": {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1),
+            "method_id": method_id(method),
+            "method_variant": method_variant(args),
+            "method_variant_id": method_variant_id(args),
             "is_cnl": int(method.startswith("cnl")),
+            "effective_cnl_mask_mode": effective_cnl_mask_mode(args),
             "wrong_rows": n_wrong,
             "correct_rows": n_correct_eval,
             "correct_eval_rows": n_correct_eval,
@@ -692,7 +793,7 @@ def main() -> None:
         ]
         if not correct_ref_source_batches:
             raise ValueError("synthetic correct/reference set is empty")
-    elif effective_method(args) == "cnl_synth":
+    elif uses_synthetic_reference(args):
         if args.synthetic_correct_size_match == "correct":
             matched_synth_n = len(correct_batches)
         elif args.synthetic_correct_size_match == "wrong":
@@ -745,6 +846,9 @@ def main() -> None:
             optimizer,
             state,
             mask_stage=args.mask_stage,
+            mask_mode=effective_cnl_mask_mode(args),
+            margin=args.cnl_margin,
+            leak=args.cnl_leak,
         )
         return w, state, loss
 
@@ -761,8 +865,13 @@ def main() -> None:
         "epoch",
         "method",
         "method_id",
+        "method_variant",
+        "method_variant_id",
         "is_cnl",
         "use_freeze",
+        "effective_cnl_mask_mode",
+        "cnl_margin",
+        "cnl_leak",
         "correct_ratio",
         "correct_seed",
         "correct_subset_mode",
@@ -784,24 +893,32 @@ def main() -> None:
     ]
     final_metrics = None
     method = effective_method(args)
-    method_id = {"sft": 0, "cnl": 1, "cnl_synth": 2}.get(method, -1)
+    numeric_method_id = method_id(method)
+    variant = method_variant(args)
+    numeric_variant_id = method_variant_id(args)
+    cnl_mask_mode = effective_cnl_mask_mode(args)
     correct_ratio = normalize_ratio(args.correct_ratio)
 
     def annotate_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         metrics.update(
             {
                 "method": method,
-                "method_id": method_id,
+                "method_id": numeric_method_id,
+                "method_variant": variant,
+                "method_variant_id": numeric_variant_id,
                 "is_cnl": int(method.startswith("cnl")),
                 "use_freeze": args.use_freeze,
+                "effective_cnl_mask_mode": cnl_mask_mode,
+                "cnl_margin": args.cnl_margin if method in ("cnl_margin", "cnl_margin_synth") else "",
+                "cnl_leak": args.cnl_leak if method in ("cnl_leaky", "cnl_leaky_synth") else "",
                 "correct_ratio": correct_ratio,
                 "correct_seed": args.correct_seed,
                 "correct_subset_mode": args.correct_subset_mode,
                 "correct_eval_scope": args.correct_eval_scope,
                 "n_correct_ref": len(correct_ref_batches),
-                "synthetic_correct_mode": args.synthetic_correct_mode if method == "cnl_synth" else "",
-                "synthetic_correct_size_match": args.synthetic_correct_size_match if method == "cnl_synth" else "",
-                "synthetic_correct_n_effective": len(correct_ref_source_batches) if method == "cnl_synth" else "",
+                "synthetic_correct_mode": args.synthetic_correct_mode if uses_synthetic_reference(args) else "",
+                "synthetic_correct_size_match": args.synthetic_correct_size_match if uses_synthetic_reference(args) else "",
+                "synthetic_correct_n_effective": len(correct_ref_source_batches) if uses_synthetic_reference(args) else "",
             }
         )
         return metrics
