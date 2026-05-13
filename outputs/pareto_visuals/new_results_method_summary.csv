@@ -1,0 +1,8 @@
+method,n,perfect_n,perfect_rate,both95_n,both95_rate,median_wrong,median_correct,best_wrong,best_correct,best_name
+sft,12,0,0.0,0,0.0,0.8591040462427746,0.4504950495049505,1.0,0.4579207920792079,qwen3-0.6b-csqa-paper-hparam-sweep-sft-lr1e-6-ep25-optsgd-masknone
+cnl,12,4,0.3333333333333333,4,0.3333333333333333,0.4848265895953757,1.0,1.0,1.0,qwen3-0.6b-csqa-paper-hparam-sweep-cnl-lr2e-6-ep25-optadamw-maskupdate
+cnl_synth,24,4,0.16666666666666666,7,0.2916666666666667,0.6734104046242775,0.9558390087563671,1.0,1.0,qwen3-0.6b-csqa-paper-hparam-sweep-cnl_synth-synthwrong-lr2e-7-ep25-optadamw-maskupdate
+cnl_margin,16,2,0.125,3,0.1875,0.47471098265895956,0.988861386138614,1.0,1.0,qwen3-0.6b-csqa-relaxed-paper-hparam-sweep-cnl_margin-margin1e-12-lr2e-7-ep25-optadamw-maskupdate
+cnl_leaky,16,4,0.25,4,0.25,0.2666184971098266,0.9987623762376239,1.0,1.0,qwen3-0.6b-csqa-relaxed-paper-hparam-sweep-cnl_leaky-leak0.05-lr2e-7-ep25-optadamw-maskupdate
+cnl_margin_synth,32,3,0.09375,8,0.25,0.5888728323699421,0.94603817318148,1.0,1.0,qwen3-0.6b-csqa-relaxed-paper-hparam-sweep-cnl_margin_synth-synthcorrect-margin1e-12-lr2e-7-ep25-optadamw-maskupdate
+cnl_leaky_synth,32,8,0.25,8,0.25,0.5447976878612717,0.9547015395181135,1.0,1.0,qwen3-0.6b-csqa-relaxed-paper-hparam-sweep-cnl_leaky_synth-synthwrong-leak0.05-lr2e-7-ep25-optadamw-maskupdate
