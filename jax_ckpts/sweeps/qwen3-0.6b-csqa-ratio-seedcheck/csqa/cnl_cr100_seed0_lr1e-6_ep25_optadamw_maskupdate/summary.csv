@@ -1,0 +1,2 @@
+epoch,method,method_id,method_variant,method_variant_id,is_cnl,use_freeze,effective_cnl_mask_mode,cnl_margin,cnl_leak,correct_ratio,correct_seed,correct_subset_mode,correct_eval_scope,n_correct_ref,synthetic_correct_mode,synthetic_correct_size_match,synthetic_correct_n_effective,train_avg_loss,wrong_to_correct,correct_to_wrong,wrong_accuracy,correct_accuracy,forgetting_rate,learning_rate,retention_rate,n_wrong,n_correct
+0,cnl,1,cnl,1,1,1,hard,,,1.0,0,nested,all,413,,,,,0,0,0.0,1.0,0.0,0.0,1.0,683,413

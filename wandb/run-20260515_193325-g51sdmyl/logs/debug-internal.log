@@ -1,0 +1,38 @@
+{"time":"2026-05-15T19:33:33.061334-04:00","level":"INFO","msg":"wandb-core"}
+{"time":"2026-05-15T19:33:33.062328-04:00","level":"INFO","msg":"stream: starting","core version":"0.25.1"}
+{"time":"2026-05-15T19:33:40.090276-04:00","level":"INFO","msg":"stream: created new stream","id":"g51sdmyl"}
+{"time":"2026-05-15T19:33:40.090438-04:00","level":"INFO","msg":"handler: started"}
+{"time":"2026-05-15T19:33:40.090916-04:00","level":"INFO","msg":"stream: started"}
+{"time":"2026-05-15T19:33:40.090964-04:00","level":"INFO","msg":"writer: started","stream_id":"g51sdmyl"}
+{"time":"2026-05-15T19:33:40.091012-04:00","level":"INFO","msg":"sender: started"}
+{"time":"2026-05-15T19:33:42.527004-04:00","level":"INFO","msg":"filestream: sending request","total_files":1,"console_offset":0,"console_lines":2}
+{"time":"2026-05-15T19:33:47.00483-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:33:57.527894-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":0,"events_lines":2,"console_offset":2,"console_lines":1,"uploaded_len":2}
+{"time":"2026-05-15T19:33:59.419073-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:34:12.527435-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":2,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:34:14.830197-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:34:27.527323-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":4,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:34:28.453201-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:34:42.45935-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":6,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:34:43.46702-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:34:57.458297-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":8,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:34:58.867893-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:35:12.460578-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":10,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:35:13.624535-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:35:27.457944-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":12,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:35:28.563938-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:35:42.457875-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":14,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:35:44.12551-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:35:57.457623-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":16,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:35:58.646988-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:36:12.457737-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":18,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:36:14.550222-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:36:27.457985-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":20,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:36:28.543847-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:36:42.456487-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":22,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:36:43.251557-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:36:57.457869-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":24,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:36:58.661674-04:00","level":"INFO","msg":"filestream: request sent","status":"200 OK"}
+{"time":"2026-05-15T19:37:12.456828-04:00","level":"INFO","msg":"filestream: sending request","total_files":2,"events_offset":26,"events_lines":2,"console_offset":2,"console_lines":1}
+{"time":"2026-05-15T19:37:17.106476-04:00","level":"ERROR","msg":"api: HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/umamicode/cnl-repro-ratio-seedcheck/g51sdmyl/file_stream"}
+{"time":"2026-05-15T19:37:17.106579-04:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found url=https://api.wandb.ai/files/umamicode/cnl-repro-ratio-seedcheck/g51sdmyl/file_stream: {\"error\":\"project umamicode/cnl-repro-ratio-seedcheck not found while streaming file\"}"}

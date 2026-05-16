@@ -1,0 +1,19 @@
+2026-05-15 19:33:25,474 INFO    MainThread:38494 [wandb_setup.py:_flush():81] Current SDK version is 0.25.1
+2026-05-15 19:33:25,474 INFO    MainThread:38494 [wandb_setup.py:_flush():81] Configure stats pid to 38494
+2026-05-15 19:33:25,474 INFO    MainThread:38494 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-05-15 19:33:25,474 INFO    MainThread:38494 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /Users/dongkyu/cnl/wandb/run-20260515_193325-g51sdmyl/logs/debug.log
+2026-05-15 19:33:25,474 INFO    MainThread:38494 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /Users/dongkyu/cnl/wandb/run-20260515_193325-g51sdmyl/logs/debug-internal.log
+2026-05-15 19:33:25,475 INFO    MainThread:38494 [wandb_init.py:init():844] calling init triggers
+2026-05-15 19:33:25,475 INFO    MainThread:38494 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'ptx_dir': None, 'model_name': 'Qwen/Qwen3-0.6B', 'weights_dir': '/Users/dongkyu/weights', 'source_jsonl': ['data/csqa_correct_Qwen2.5-1.5B-Instruct.jsonl', 'data/csqa_wrong_Qwen2.5-1.5B-Instruct.jsonl'], 'out_correct_jsonl': 'data/csqa_correct_Qwen_Qwen3-0.6B.jsonl', 'out_wrong_jsonl': 'data/csqa_wrong_Qwen_Qwen3-0.6B.jsonl', 'synthetic_correct_jsonl': None, 'synthetic_correct_source_jsonl': None, 'synthetic_correct_mode': 'random', 'synthetic_correct_n': 512, 'synthetic_correct_size_match': 'fixed', 'synthetic_correct_max_rows': None, 'synthetic_label_mode': 'argmax', 'synthetic_temperature': 1.0, 'synthetic_min_confidence': 0.0, 'synthetic_seed': 0, 'out_dir': 'jax_ckpts/sweeps/qwen3-0.6b-csqa-ratio-seedcheck/csqa/cnl_cr100_seed0_lr1e-6_ep25_optadamw_maskupdate', 'skip_split': False, 'max_length': 256, 'max_rows': None, 'max_wrong': None, 'max_correct': None, 'correct_ratio': 100.0, 'correct_seed': 0, 'method_name': 'cnl', 'correct_subset_mode': 'nested', 'correct_eval_scope': 'all', 'epochs': 25, 'lr': 1e-06, 'optimizer': 'adamw', 'weight_decay': 0.1, 'use_freeze': 1, 'mask_stage': 'update', 'cnl_mask_mode': 'hard', 'cnl_margin': 0.0, 'cnl_leak': 0.0, 'tp_size': None, 'dp_shard': False, 'eval_before_train': 1, 'wandb_project': 'cnl-repro-ratio-seedcheck', 'wandb_entity': None, 'wandb_run_name': 'qwen3-0.6b-csqa-ratio-seedcheck-csqa-cnl-cr100-seed0-lr1e-6-ep25-optadamw-maskupdate', 'wandb_mode': None, 'method': 'cnl', 'method_id': 1, 'method_variant': 'cnl', 'method_variant_id': 1, 'is_cnl': 1, 'effective_cnl_mask_mode': 'hard', 'wrong_rows': 683, 'correct_rows': 413, 'correct_eval_rows': 413, 'correct_ref_rows': 413, 'correct_ratio_normalized': 1.0, 'jax_devices': 1, '_wandb': {}}
+2026-05-15 19:33:25,475 INFO    MainThread:38494 [wandb_init.py:init():892] starting backend
+2026-05-15 19:33:32,971 INFO    MainThread:38494 [wandb_init.py:init():895] sending inform_init request
+2026-05-15 19:33:33,059 INFO    MainThread:38494 [wandb_init.py:init():903] backend started and connected
+2026-05-15 19:33:33,063 INFO    MainThread:38494 [wandb_init.py:init():973] updated telemetry
+2026-05-15 19:33:33,113 INFO    MainThread:38494 [wandb_init.py:init():997] communicating run to backend with 90.0 second timeout
+2026-05-15 19:33:42,322 INFO    MainThread:38494 [wandb_init.py:init():1042] starting run threads in backend
+2026-05-15 19:33:42,523 INFO    MainThread:38494 [wandb_run.py:_console_start():2524] atexit reg
+2026-05-15 19:33:42,523 INFO    MainThread:38494 [wandb_run.py:_redirect():2373] redirect: wrap_raw
+2026-05-15 19:33:42,523 INFO    MainThread:38494 [wandb_run.py:_redirect():2442] Wrapping output streams.
+2026-05-15 19:33:42,524 INFO    MainThread:38494 [wandb_run.py:_redirect():2465] Redirects installed.
+2026-05-15 19:33:42,526 INFO    MainThread:38494 [wandb_init.py:init():1082] run started, returning control to user process

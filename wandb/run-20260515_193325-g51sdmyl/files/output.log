@@ -1,0 +1,8 @@
+
+===== Epoch 0 (before training) =====
+infer wrong ep0:  35%|████████▍               | 241/683 [03:39<06:29,  1.14it/s][34m[1mwandb[0m: [33mWARNING[0m Fatal error while uploading data. Some run data will not be synced, but it will still be written to disk. Use `wandb sync` at the end of the run to try uploading.
+infer wrong ep0: 100%|████████████████████████| 683/683 [10:21<00:00,  1.10it/s]
+infer correct ep0: 100%|██████████████████████| 413/413 [06:13<00:00,  1.11it/s]
+
+===== Epoch 1 =====
+correct mean-grad:  29%|██████▍               | 121/413 [17:00<45:39,  9.38s/it]

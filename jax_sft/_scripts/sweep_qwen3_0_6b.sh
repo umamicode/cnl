@@ -15,8 +15,10 @@ set -euo pipefail
 #   gradient = mask raw gradients before the optimizer update
 #   update   = mask the final optimizer update direction
 # SFT runs ignore MASK_STAGES and are logged as masknone.
-# cnl_synth uses CNL but replaces the real correct-reference set with the
-# model's own pseudo-labeled outputs from a prompt bank.
+# cnl_synth uses CNL but replaces the real correct-reference set with generated
+# synthetic MCQ prompts and the model's own pseudo-labels, with no mastered rows.
+# cnl_synth_icl saves a small mastered-set context, uses it only to generate new
+# same-format MCQ prompts across varied topics, then pseudo-labels those prompts.
 
 DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
@@ -31,14 +33,20 @@ METHODS="${METHODS:-cnl sft}"
 CNL_MARGINS="${CNL_MARGINS:-1e-12 1e-10}"
 CNL_LEAKS="${CNL_LEAKS:-0.01 0.05}"
 SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS:-}"
-SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE:-random}"
+SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE:-generate}"
 SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N:-512}"
 SYNTHETIC_CORRECT_SIZE_MATCHES="${SYNTHETIC_CORRECT_SIZE_MATCHES:-fixed}"
 SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS:-}"
 SYNTH_LABEL_MODE="${SYNTH_LABEL_MODE:-argmax}"
 SYNTH_TEMPERATURE="${SYNTH_TEMPERATURE:-1.0}"
+SYNTH_TEMPERATURES="${SYNTH_TEMPERATURES:-${SYNTH_TEMPERATURE}}"
+SYNTHETIC_GENERATION_MAX_LENGTH="${SYNTHETIC_GENERATION_MAX_LENGTH:-768}"
+SYNTHETIC_GENERATION_MAX_NEW_TOKENS="${SYNTHETIC_GENERATION_MAX_NEW_TOKENS:-192}"
+SYNTHETIC_GENERATION_BATCH_SIZE="${SYNTHETIC_GENERATION_BATCH_SIZE:-8}"
+SYNTHETIC_GENERATION_RETRIES="${SYNTHETIC_GENERATION_RETRIES:-3}"
 SYNTH_MIN_CONFIDENCE="${SYNTH_MIN_CONFIDENCE:-0.0}"
 SYNTH_SEED="${SYNTH_SEED:-0}"
+SYNTHETIC_ICL_EXAMPLES="${SYNTHETIC_ICL_EXAMPLES:-4}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-cnl-repro}"
 SWEEP_NAME="${SWEEP_NAME:-qwen3-0.6b-${DATASET}-sweep}"
@@ -48,6 +56,7 @@ MAX_LENGTH="${MAX_LENGTH:-256}"
 MAX_ROWS="${MAX_ROWS:-}"
 MAX_WRONG="${MAX_WRONG:-}"
 MAX_CORRECT="${MAX_CORRECT:-}"
+CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE:-subset}"
 
 OUT_CORRECT="${OUT_CORRECT:-${DATA_ROOT}/${DATASET}_correct_${MODEL_TAG}.jsonl}"
 OUT_WRONG="${OUT_WRONG:-${DATA_ROOT}/${DATASET}_wrong_${MODEL_TAG}.jsonl}"
@@ -59,11 +68,14 @@ run_one() {
   local optimizer="$4"
   local mask_stage="$5"
   local synth_size_match="${6:-fixed}"
-  local cnl_margin="${7:-0.0}"
-  local cnl_leak="${8:-0.0}"
+  local synth_temperature="${7:-${SYNTH_TEMPERATURE}}"
+  local cnl_margin="${8:-0.0}"
+  local cnl_leak="${9:-0.0}"
   local use_freeze="1"
   local run_mask="${mask_stage}"
   local synth_suffix=""
+  local temp_suffix=""
+  local synth_mode="${SYNTHETIC_CORRECT_MODE}"
   local cnl_mask_mode="hard"
   local relax_suffix=""
 
@@ -73,6 +85,13 @@ run_one() {
   elif [[ "${method}" == "cnl_synth" ]]; then
     use_freeze="1"
     synth_suffix="-synth${synth_size_match}"
+    temp_suffix="-temp${synth_temperature}"
+    synth_mode="generate"
+  elif [[ "${method}" == "cnl_synth_icl" ]]; then
+    use_freeze="1"
+    synth_suffix="-synthicl${synth_size_match}-k${SYNTHETIC_ICL_EXAMPLES}"
+    temp_suffix="-temp${synth_temperature}"
+    synth_mode="icl"
   elif [[ "${method}" == "cnl_margin" ]]; then
     use_freeze="1"
     cnl_mask_mode="margin"
@@ -96,8 +115,8 @@ run_one() {
     exit 1
   fi
 
-  local run_name="${SWEEP_NAME}-${method}${synth_suffix}${relax_suffix}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
-  local out_dir="${OUT_ROOT}/${method}${synth_suffix}${relax_suffix}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
+  local run_name="${SWEEP_NAME}-${method}${synth_suffix}${temp_suffix}${relax_suffix}-lr${lr}-ep${epochs}-opt${optimizer}-mask${run_mask}"
+  local out_dir="${OUT_ROOT}/${method}${synth_suffix}${temp_suffix}${relax_suffix}_lr${lr}_ep${epochs}_opt${optimizer}_mask${run_mask}"
 
   echo
   echo "================ Sweep Run ================"
@@ -110,7 +129,11 @@ run_one() {
   echo "CNL_MODE  : ${cnl_mask_mode}"
   echo "CNL_MARGIN: ${cnl_margin}"
   echo "CNL_LEAK  : ${cnl_leak}"
+  echo "SYNTH_MODE: ${synth_mode}"
   echo "SYNTH_SIZE: ${synth_size_match}"
+  echo "SYNTH_ICL_K: ${SYNTHETIC_ICL_EXAMPLES}"
+  echo "SYNTH_TEMP: ${synth_temperature}"
+  echo "SYNTH_GEN_TEMP: ${synth_temperature}"
   echo "OUT_DIR   : ${out_dir}"
   echo "==========================================="
 
@@ -134,15 +157,22 @@ run_one() {
   MAX_ROWS="${MAX_ROWS}" \
   MAX_WRONG="${MAX_WRONG}" \
   MAX_CORRECT="${MAX_CORRECT}" \
+  CORRECT_EVAL_SCOPE="${CORRECT_EVAL_SCOPE}" \
   SYNTHETIC_CORRECT_SOURCE_JSONLS="${SYNTHETIC_CORRECT_SOURCE_JSONLS}" \
-  SYNTHETIC_CORRECT_MODE="${SYNTHETIC_CORRECT_MODE}" \
+  SYNTHETIC_CORRECT_MODE="${synth_mode}" \
   SYNTHETIC_CORRECT_N="${SYNTHETIC_CORRECT_N}" \
   SYNTHETIC_CORRECT_SIZE_MATCH="${synth_size_match}" \
   SYNTHETIC_CORRECT_MAX_ROWS="${SYNTHETIC_CORRECT_MAX_ROWS}" \
   SYNTHETIC_LABEL_MODE="${SYNTH_LABEL_MODE}" \
-  SYNTHETIC_TEMPERATURE="${SYNTH_TEMPERATURE}" \
+  SYNTHETIC_TEMPERATURE="${synth_temperature}" \
+  SYNTHETIC_GENERATION_TEMPERATURE="${synth_temperature}" \
+  SYNTHETIC_GENERATION_MAX_LENGTH="${SYNTHETIC_GENERATION_MAX_LENGTH}" \
+  SYNTHETIC_GENERATION_MAX_NEW_TOKENS="${SYNTHETIC_GENERATION_MAX_NEW_TOKENS}" \
+  SYNTHETIC_GENERATION_BATCH_SIZE="${SYNTHETIC_GENERATION_BATCH_SIZE}" \
+  SYNTHETIC_GENERATION_RETRIES="${SYNTHETIC_GENERATION_RETRIES}" \
   SYNTHETIC_MIN_CONFIDENCE="${SYNTH_MIN_CONFIDENCE}" \
   SYNTHETIC_SEED="${SYNTH_SEED}" \
+  SYNTHETIC_ICL_EXAMPLES="${SYNTHETIC_ICL_EXAMPLES}" \
   SKIP_SPLIT="${SKIP_SPLIT_FOR_RUN}" \
   WANDB_PROJECT="${WANDB_PROJECT}" \
   WANDB_RUN_NAME="${run_name}" \
@@ -164,9 +194,15 @@ echo "SYNTH_MODE    : ${SYNTHETIC_CORRECT_MODE}"
 echo "SYNTH_SOURCE  : ${SYNTHETIC_CORRECT_SOURCE_JSONLS:-source_jsonl}"
 echo "SYNTH_N       : ${SYNTHETIC_CORRECT_N}"
 echo "SYNTH_SIZES   : ${SYNTHETIC_CORRECT_SIZE_MATCHES}"
+echo "SYNTH_LABEL   : ${SYNTH_LABEL_MODE}"
+echo "SYNTH_TEMPS   : ${SYNTH_TEMPERATURES}"
+echo "SYNTH_ICL_K   : ${SYNTHETIC_ICL_EXAMPLES}"
+echo "SYNTH_GEN_LEN : ${SYNTHETIC_GENERATION_MAX_LENGTH}"
+echo "SYNTH_GEN_NEW : ${SYNTHETIC_GENERATION_MAX_NEW_TOKENS}"
 echo "MAX_ROWS      : ${MAX_ROWS}"
 echo "MAX_WRONG     : ${MAX_WRONG}"
 echo "MAX_CORRECT   : ${MAX_CORRECT}"
+echo "CORRECT_EVAL  : ${CORRECT_EVAL_SCOPE}"
 echo "WANDB_PROJECT : ${WANDB_PROJECT}"
 echo "OUT_ROOT      : ${OUT_ROOT}"
 echo "================================================="
@@ -179,22 +215,34 @@ for lr in ${LRS}; do
         if [[ "${method}" == "cnl" ]]; then
           for mask_stage in ${MASK_STAGES}; do
             SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-            run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "0.0" "0.0"
+            run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "${SYNTH_TEMPERATURE}" "0.0" "0.0"
             first_run=0
           done
         elif [[ "${method}" == "cnl_synth" ]]; then
           for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
-            for mask_stage in ${MASK_STAGES}; do
-              SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "0.0" "0.0"
-              first_run=0
+            for synth_temperature in ${SYNTH_TEMPERATURES}; do
+              for mask_stage in ${MASK_STAGES}; do
+                SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
+                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${synth_temperature}" "0.0" "0.0"
+                first_run=0
+              done
+            done
+          done
+        elif [[ "${method}" == "cnl_synth_icl" ]]; then
+          for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
+            for synth_temperature in ${SYNTH_TEMPERATURES}; do
+              for mask_stage in ${MASK_STAGES}; do
+                SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
+                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${synth_temperature}" "0.0" "0.0"
+                first_run=0
+              done
             done
           done
         elif [[ "${method}" == "cnl_margin" ]]; then
           for cnl_margin in ${CNL_MARGINS}; do
             for mask_stage in ${MASK_STAGES}; do
               SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "${cnl_margin}" "0.0"
+              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "${SYNTH_TEMPERATURE}" "${cnl_margin}" "0.0"
               first_run=0
             done
           done
@@ -202,7 +250,7 @@ for lr in ${LRS}; do
           for cnl_leak in ${CNL_LEAKS}; do
             for mask_stage in ${MASK_STAGES}; do
               SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "0.0" "${cnl_leak}"
+              run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "fixed" "${SYNTH_TEMPERATURE}" "0.0" "${cnl_leak}"
               first_run=0
             done
           done
@@ -211,7 +259,7 @@ for lr in ${LRS}; do
             for cnl_margin in ${CNL_MARGINS}; do
               for mask_stage in ${MASK_STAGES}; do
                 SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${cnl_margin}" "0.0"
+                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${SYNTH_TEMPERATURE}" "${cnl_margin}" "0.0"
                 first_run=0
               done
             done
@@ -221,14 +269,14 @@ for lr in ${LRS}; do
             for cnl_leak in ${CNL_LEAKS}; do
               for mask_stage in ${MASK_STAGES}; do
                 SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "0.0" "${cnl_leak}"
+                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${SYNTH_TEMPERATURE}" "0.0" "${cnl_leak}"
                 first_run=0
               done
             done
           done
         elif [[ "${method}" == "sft" ]]; then
           SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
-          run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "gradient" "fixed" "0.0" "0.0"
+          run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "gradient" "fixed" "${SYNTH_TEMPERATURE}" "0.0" "0.0"
           first_run=0
         else
           echo "Unknown method: ${method}" >&2

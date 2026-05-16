@@ -13,9 +13,10 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -53,19 +54,28 @@ def parse_args() -> argparse.Namespace:
         type=str,
         nargs="+",
         default=None,
-        help="Prompt bank to pseudo-label for cnl_synth. Defaults to source_jsonl.",
+        help="Prompt bank to pseudo-label for source-mode cnl_synth. Defaults to source_jsonl.",
     )
     p.add_argument(
         "--synthetic_correct_mode",
-        choices=["source", "random"],
-        default="source",
+        choices=["source", "random", "generate", "icl"],
+        default="generate",
         help=(
-            "How cnl_synth gets prompts. 'source' pseudo-labels an existing "
-            "prompt bank; 'random' creates task-shaped MCQ prompts from a "
-            "small built-in vocabulary before pseudo-labeling."
+            "How cnl_synth gets prompts. 'generate' samples new MCQ prompts from the "
+            "model with no mastered examples; 'icl' uses a few mastered examples only "
+            "as generation demonstrations, then pseudo-labels the generated prompts; "
+            "'random' creates hand-templated MCQ prompts from a small vocabulary; "
+            "'source' pseudo-labels an existing prompt bank and is not memory-free "
+            "if that prompt bank contains mastered-set questions."
         ),
     )
     p.add_argument("--synthetic_correct_n", type=int, default=512)
+    p.add_argument(
+        "--synthetic_icl_examples",
+        type=int,
+        default=4,
+        help="Number of mastered examples saved as in-context demonstrations for cnl_synth_icl.",
+    )
     p.add_argument(
         "--synthetic_correct_size_match",
         choices=["fixed", "correct", "wrong"],
@@ -79,6 +89,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--synthetic_correct_max_rows", type=int, default=None)
     p.add_argument("--synthetic_label_mode", choices=["argmax", "sample"], default="argmax")
     p.add_argument("--synthetic_temperature", type=float, default=1.0)
+    p.add_argument(
+        "--synthetic_generation_temperature",
+        type=float,
+        default=None,
+        help="Temperature for generated synthetic prompts. Defaults to synthetic_temperature.",
+    )
+    p.add_argument("--synthetic_generation_max_length", type=int, default=768)
+    p.add_argument("--synthetic_generation_max_new_tokens", type=int, default=192)
+    p.add_argument("--synthetic_generation_batch_size", type=int, default=8)
+    p.add_argument("--synthetic_generation_retries", type=int, default=3)
     p.add_argument("--synthetic_min_confidence", type=float, default=0.0)
     p.add_argument("--synthetic_seed", type=int, default=0)
     p.add_argument("--out_dir", type=str, required=True)
@@ -104,6 +124,7 @@ def parse_args() -> argparse.Namespace:
             "sft",
             "cnl",
             "cnl_synth",
+            "cnl_synth_icl",
             "cnl_margin",
             "cnl_leaky",
             "cnl_margin_synth",
@@ -426,6 +447,297 @@ def make_random_mcq_rows(n_rows: int, seed: int) -> list[dict[str, Any]]:
     return rows
 
 
+SYNTHETIC_TOPICS = [
+    "elementary math",
+    "algebra",
+    "computer programming",
+    "software debugging",
+    "biology",
+    "medicine",
+    "physics",
+    "chemistry",
+    "world history",
+    "civics",
+    "economics",
+    "business",
+    "law",
+    "ethics",
+    "literature",
+    "linguistics",
+    "geography",
+    "environmental science",
+    "psychology",
+    "sports",
+    "music",
+    "visual art",
+    "daily life",
+    "workplace decisions",
+]
+
+
+def make_generation_prompt(
+    examples: list[dict[str, Any]],
+    topic: str,
+) -> str:
+    example_text = ""
+    if examples:
+        blocks = []
+        for i, ex in enumerate(examples, start=1):
+            blocks.append(f"Example {i}:\n{ex['question']}")
+        example_text = (
+            "Use these examples only to learn the prompt format and task style. "
+            "Do not copy their facts, topics, wording, or answer choices.\n\n"
+            + "\n\n".join(blocks)
+            + "\n\n"
+        )
+    return (
+        "Create one new multiple-choice evaluation prompt.\n"
+        f"{example_text}"
+        f"Topic area for the new prompt: {topic}.\n\n"
+        "Requirements:\n"
+        "- exactly one question\n"
+        "- exactly four answer choices labeled A, B, C, and D\n"
+        "- use a similar prompt format to the examples if examples are provided\n"
+        "- use a different topic and facts from the examples\n"
+        "- include the final instruction asking the answerer to reply with only A, B, C, or D\n"
+        "- do not include the correct answer, explanation, or any text outside the prompt\n\n"
+        "Return only the generated prompt."
+    )
+
+
+def parse_generated_mcq(text: str) -> str | None:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return None
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+    text = re.sub(r"^```(?:text)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    text = re.split(
+        r"(?im)^\s*(?:answer|correct answer|explanation|solution)\s*[:\-]",
+        text,
+        maxsplit=1,
+    )[0].strip()
+
+    stem_lines: list[str] = []
+    options: dict[str, str] = {}
+    current_label: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(
+            r"(?i)^(?:please reply|do not provide|return only|answer with|respond with)",
+            line,
+        ):
+            current_label = None
+            continue
+        option_match = re.match(r"^([A-D])[\.\):]\s*(.+)$", line)
+        if option_match:
+            current_label = option_match.group(1)
+            options[current_label] = option_match.group(2).strip()
+            continue
+        if current_label is not None:
+            options[current_label] = f"{options[current_label]} {line}".strip()
+        elif not options:
+            stem_lines.append(line)
+
+    if set(options) != set("ABCD"):
+        return None
+    stem = "\n".join(stem_lines)
+    stem = re.sub(r"(?im)^\s*(?:generated prompt|prompt)\s*:\s*", "", stem).strip()
+    stem = re.sub(r"(?im)^\s*options\s*:\s*$", "", stem).strip()
+    stem = re.sub(r"(?is)\n?\s*options\s*:\s*$", "", stem).strip()
+    stem = re.sub(r"(?i)^question\s*:\s*", "", stem).strip()
+    if not stem:
+        return None
+
+    cleaned_options = {label: re.sub(r"\s+", " ", value).strip() for label, value in options.items()}
+    if any(not value for value in cleaned_options.values()):
+        return None
+    if len(set(cleaned_options.values())) < 4:
+        return None
+
+    return (
+        f"Question: {stem}\n"
+        "Options:\n"
+        f"A: {cleaned_options['A']}\n"
+        f"B: {cleaned_options['B']}\n"
+        f"C: {cleaned_options['C']}\n"
+        f"D: {cleaned_options['D']}\n\n"
+        "Please reply with only A, B, C, or D. Do not provide any explanation."
+    )
+
+
+def sample_completions(
+    model: Any,
+    weights: Any,
+    sample_fn: Callable[..., Any],
+    prompts: list[str],
+    *,
+    max_length: int,
+    max_new_tokens: int,
+    temperature: float,
+    seed: int,
+) -> list[str]:
+    if not prompts:
+        return []
+    tokenizer = model.tokenizer
+    encoded: list[list[int]] = []
+    for prompt in prompts:
+        chat_prompt = format_prompt(tokenizer, prompt)
+        ids = tokenizer(chat_prompt, add_special_tokens=False)["input_ids"]
+        if not ids or len(ids) + 1 >= max_length:
+            encoded.append([])
+        else:
+            encoded.append(ids[: max_length - 1])
+    if not any(encoded):
+        return [""] * len(prompts)
+
+    seq_len = min(max_length, max(len(ids) for ids in encoded if ids) + max_new_tokens)
+    pad_id = tokenizer.pad_token_id
+    tokens = np.full((len(prompts), seq_len), pad_id, dtype=np.int32)
+    prompt_lens = []
+    for i, ids in enumerate(encoded):
+        if ids and len(ids) < seq_len:
+            tokens[i, : len(ids)] = ids
+            prompt_lens.append(len(ids))
+        else:
+            prompt_lens.append(0)
+
+    sampled = np.asarray(
+        sample_fn(
+            jax.random.key(seed),
+            model,
+            jnp.asarray(tokens, dtype=jnp.int32),
+            temperature=temperature,
+            weights=weights,
+        )
+    )
+    stop_ids = {tokenizer.eos_token_id, tokenizer.pad_token_id}
+    outputs = []
+    for row, prompt_len in zip(sampled, prompt_lens):
+        if prompt_len == 0:
+            outputs.append("")
+            continue
+        gen = row[prompt_len:]
+        stop = len(gen)
+        for idx, token_id in enumerate(gen):
+            if int(token_id) in stop_ids:
+                stop = idx
+                break
+        outputs.append(tokenizer.decode(gen[:stop].tolist(), skip_special_tokens=True).strip())
+    return outputs
+
+
+def generate_synthetic_mcq_rows(
+    model: Any,
+    weights: Any,
+    sample_fn: Callable[..., Any],
+    n_rows: int,
+    correct_batches: list[dict[str, Any]],
+    *,
+    use_icl: bool,
+    n_examples: int,
+    max_length: int,
+    max_new_tokens: int,
+    batch_size: int,
+    retries: int,
+    temperature: float,
+    seed: int,
+    icl_examples_out_jsonl: str | None = None,
+) -> list[dict[str, Any]]:
+    if n_rows <= 0:
+        return []
+    if use_icl and not correct_batches:
+        raise ValueError("cnl_synth_icl requires at least one mastered/correct example")
+    if max_new_tokens <= 0:
+        raise ValueError("--synthetic_generation_max_new_tokens must be positive")
+    if max_length <= max_new_tokens + 1:
+        raise ValueError("--synthetic_generation_max_length must be larger than max_new_tokens")
+    if batch_size <= 0:
+        raise ValueError("--synthetic_generation_batch_size must be positive")
+
+    rng = np.random.default_rng(seed)
+    examples: list[dict[str, Any]] = []
+    if use_icl:
+        k = min(n_examples, len(correct_batches))
+        example_indices = rng.choice(len(correct_batches), size=k, replace=False).tolist()
+        examples = [correct_batches[i] for i in example_indices]
+        if icl_examples_out_jsonl is not None:
+            os.makedirs(os.path.dirname(icl_examples_out_jsonl) or ".", exist_ok=True)
+            with open(icl_examples_out_jsonl, "w", encoding="utf-8") as f:
+                for demo_id, ex in enumerate(examples):
+                    write_jsonl_line(
+                        f,
+                        {
+                            "synthetic_icl_demo_id": demo_id,
+                            "question": ex["question"],
+                            "label": ex["label"],
+                        },
+                    )
+
+    topic_order = rng.permutation(len(SYNTHETIC_TOPICS)).tolist()
+    rows: list[dict[str, Any]] = []
+    seen_questions: set[str] = set()
+    max_attempts = max(n_rows, n_rows * max(1, retries))
+    attempts = 0
+    with tqdm(total=n_rows, desc="generate synthetic prompts") as pbar:
+        while len(rows) < n_rows and attempts < max_attempts:
+            cur_batch = min(batch_size, max_attempts - attempts)
+            prompts = []
+            topics = []
+            for _ in range(cur_batch):
+                if attempts > 0 and attempts % len(topic_order) == 0:
+                    topic_order = rng.permutation(len(SYNTHETIC_TOPICS)).tolist()
+                topic_idx = topic_order[attempts % len(topic_order)]
+                topic = SYNTHETIC_TOPICS[topic_idx]
+                topics.append(topic)
+                prompts.append(make_generation_prompt(examples, topic))
+                attempts += 1
+
+            completions = sample_completions(
+                model,
+                weights,
+                sample_fn,
+                prompts,
+                max_length=max_length,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                seed=seed + attempts,
+            )
+            for completion, topic in zip(completions, topics):
+                parsed = parse_generated_mcq(completion)
+                if parsed is None:
+                    continue
+                key = re.sub(r"\s+", " ", parsed).strip().lower()
+                if key in seen_questions:
+                    continue
+                seen_questions.add(key)
+                rows.append(
+                    {
+                        "question": parsed,
+                        "label": "A",
+                        "synthetic_prompt": True,
+                        "synthetic_prompt_id": len(rows),
+                        "synthetic_prompt_method": "icl_generate" if use_icl else "generate",
+                        "synthetic_topic": topic,
+                        "synthetic_generation_temperature": temperature,
+                        "synthetic_icl_examples": len(examples) if use_icl else 0,
+                    }
+                )
+                pbar.update(1)
+                if len(rows) >= n_rows:
+                    break
+
+    if len(rows) < n_rows:
+        raise ValueError(
+            f"generated only {len(rows)}/{n_rows} synthetic MCQ prompts; "
+            "increase --synthetic_generation_retries or inspect the generation prompt"
+        )
+    return rows
+
+
 def make_synthetic_correct_batches(
     rows: list[dict[str, Any]],
     tokenizer: Any,
@@ -479,6 +791,15 @@ def make_synthetic_correct_batches(
                 "source_label": row.get("label"),
                 "source_predict_label": row.get("predict_label"),
             }
+            for meta_key in (
+                "synthetic_prompt_id",
+                "synthetic_prompt_method",
+                "synthetic_topic",
+                "synthetic_generation_temperature",
+                "synthetic_icl_examples",
+            ):
+                if meta_key in row:
+                    synthetic_row[meta_key] = row[meta_key]
             batch = tokenize_row(tokenizer, synthetic_row, max_length)
             if batch is None:
                 skipped += 1
@@ -583,6 +904,7 @@ def method_id(method: str) -> int:
         "cnl_leaky": 4,
         "cnl_margin_synth": 5,
         "cnl_leaky_synth": 6,
+        "cnl_synth_icl": 7,
     }.get(method, -1)
 
 
@@ -596,7 +918,12 @@ def effective_cnl_mask_mode(args: argparse.Namespace) -> str:
 
 
 def uses_synthetic_reference(args: argparse.Namespace) -> bool:
-    return effective_method(args).endswith("_synth")
+    return effective_method(args) in {
+        "cnl_synth",
+        "cnl_synth_icl",
+        "cnl_margin_synth",
+        "cnl_leaky_synth",
+    }
 
 
 def method_variant(args: argparse.Namespace) -> str:
@@ -606,7 +933,9 @@ def method_variant(args: argparse.Namespace) -> str:
     if method == "cnl_leaky":
         return f"{method}_a{args.cnl_leak:g}"
     if method == "cnl_synth":
-        return f"{method}_{args.synthetic_correct_size_match}"
+        return f"{method}_{args.synthetic_correct_mode}_{args.synthetic_correct_size_match}"
+    if method == "cnl_synth_icl":
+        return f"{method}_{args.synthetic_correct_size_match}_k{args.synthetic_icl_examples}"
     if method == "cnl_margin_synth":
         return f"{method}_{args.synthetic_correct_size_match}_m{args.cnl_margin:g}"
     if method == "cnl_leaky_synth":
@@ -625,6 +954,7 @@ def method_variant_id(args: argparse.Namespace) -> int:
     }.get(args.synthetic_correct_size_match, 0)
     return {
         "cnl_synth": 20,
+        "cnl_synth_icl": 30,
         "cnl_margin_synth": 50,
         "cnl_leaky_synth": 60,
     }.get(method, 90) + size_offset
@@ -636,6 +966,10 @@ def wandb_tags(args: argparse.Namespace) -> list[str]:
     if uses_synthetic_reference(args):
         tags.append(f"synth_size:{args.synthetic_correct_size_match}")
         tags.append(f"synth_mode:{args.synthetic_correct_mode}")
+        if args.synthetic_correct_mode in ("generate", "icl"):
+            tags.append(f"synth_gen_temp:{args.synthetic_generation_temperature}")
+        if method == "cnl_synth_icl":
+            tags.append(f"synth_icl_k:{args.synthetic_icl_examples}")
     if method.startswith("cnl"):
         tags.append(f"cnl_mask:{effective_cnl_mask_mode(args)}")
     return tags
@@ -723,13 +1057,27 @@ def save_final_summary(out_dir: str, metrics: dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.synthetic_generation_temperature is None:
+        args.synthetic_generation_temperature = args.synthetic_temperature
+    if args.synthetic_generation_temperature <= 0:
+        raise ValueError("--synthetic_generation_temperature must be positive")
+    if args.method_name == "cnl_synth_icl":
+        args.synthetic_correct_mode = "icl"
+    if uses_synthetic_reference(args) and args.correct_eval_scope == "subset":
+        print(
+            "Synthetic-reference methods evaluate retention on the real mastered set; "
+            "overriding correct_eval_scope=subset to all."
+        )
+        args.correct_eval_scope = "all"
     if args.ptx_dir:
         ptx_dir = Path(args.ptx_dir).expanduser()
         sys.path.insert(0, str(ptx_dir))
         from models import qwen
+        from models.sampling import sample as sample_fn
         backend = str(ptx_dir)
     else:
         from jax_sft.ptx_backend import qwen
+        from jax_sft.ptx_backend.sampling import sample as sample_fn
         backend = "vendored:jax_sft.ptx_backend.qwen"
 
     tp_size = args.tp_size or jax.device_count()
@@ -748,6 +1096,7 @@ def main() -> None:
     ensure_pad_token(model.tokenizer)
     weights = jax.tree.map(lambda x: x.astype(jnp.float32), model.weights)
     forward = jax.jit(model.forward)
+    model.forward = forward
 
     loss_grad_fn = jax.jit(jax.value_and_grad(lambda w, batch: loss_for_batch(forward, w, batch)))
     predict_logits_fn = jax.jit(
@@ -802,9 +1151,46 @@ def main() -> None:
             matched_synth_n = args.synthetic_correct_max_rows or args.synthetic_correct_n
         if args.synthetic_correct_mode == "random":
             synthetic_rows = make_random_mcq_rows(matched_synth_n, args.synthetic_seed)
+        elif args.synthetic_correct_mode == "generate":
+            synthetic_rows = generate_synthetic_mcq_rows(
+                model,
+                weights,
+                sample_fn,
+                matched_synth_n,
+                correct_batches,
+                use_icl=False,
+                n_examples=0,
+                max_length=args.synthetic_generation_max_length,
+                max_new_tokens=args.synthetic_generation_max_new_tokens,
+                batch_size=args.synthetic_generation_batch_size,
+                retries=args.synthetic_generation_retries,
+                temperature=args.synthetic_generation_temperature,
+                seed=args.synthetic_seed,
+            )
+        elif args.synthetic_correct_mode == "icl":
+            synthetic_rows = generate_synthetic_mcq_rows(
+                model,
+                weights,
+                sample_fn,
+                matched_synth_n,
+                correct_batches,
+                use_icl=True,
+                n_examples=args.synthetic_icl_examples,
+                max_length=args.synthetic_generation_max_length,
+                max_new_tokens=args.synthetic_generation_max_new_tokens,
+                batch_size=args.synthetic_generation_batch_size,
+                retries=args.synthetic_generation_retries,
+                temperature=args.synthetic_generation_temperature,
+                seed=args.synthetic_seed + args.correct_seed,
+                icl_examples_out_jsonl=str(jsonl_dir / "synthetic_icl_examples.jsonl"),
+            )
         else:
             source_paths = args.synthetic_correct_source_jsonl or args.source_jsonl
             synthetic_rows = load_jsonl(source_paths, matched_synth_n)
+        prompt_rows_path = jsonl_dir / "synthetic_prompt_rows.jsonl"
+        with open(prompt_rows_path, "w", encoding="utf-8") as f:
+            for row in synthetic_rows:
+                write_jsonl_line(f, row)
         correct_ref_source_batches = make_synthetic_correct_batches(
             synthetic_rows,
             model.tokenizer,
@@ -880,6 +1266,12 @@ def main() -> None:
         "synthetic_correct_mode",
         "synthetic_correct_size_match",
         "synthetic_correct_n_effective",
+        "synthetic_label_mode",
+        "synthetic_temperature",
+        "synthetic_generation_temperature",
+        "synthetic_generation_max_length",
+        "synthetic_generation_max_new_tokens",
+        "synthetic_icl_examples",
         "train_avg_loss",
         "wrong_to_correct",
         "correct_to_wrong",
@@ -919,6 +1311,12 @@ def main() -> None:
                 "synthetic_correct_mode": args.synthetic_correct_mode if uses_synthetic_reference(args) else "",
                 "synthetic_correct_size_match": args.synthetic_correct_size_match if uses_synthetic_reference(args) else "",
                 "synthetic_correct_n_effective": len(correct_ref_source_batches) if uses_synthetic_reference(args) else "",
+                "synthetic_label_mode": args.synthetic_label_mode if uses_synthetic_reference(args) else "",
+                "synthetic_temperature": args.synthetic_temperature if uses_synthetic_reference(args) else "",
+                "synthetic_generation_temperature": args.synthetic_generation_temperature if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
+                "synthetic_generation_max_length": args.synthetic_generation_max_length if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
+                "synthetic_generation_max_new_tokens": args.synthetic_generation_max_new_tokens if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
+                "synthetic_icl_examples": args.synthetic_icl_examples if method == "cnl_synth_icl" else "",
             }
         )
         return metrics
