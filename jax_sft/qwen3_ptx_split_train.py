@@ -58,12 +58,14 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--synthetic_correct_mode",
-        choices=["source", "random", "generate", "icl"],
+        choices=["source", "random", "generate", "icl", "general"],
         default="generate",
         help=(
             "How cnl_synth gets prompts. 'generate' samples new MCQ prompts from the "
             "model with no mastered examples; 'icl' uses a few mastered examples only "
             "as generation demonstrations, then pseudo-labels the generated prompts; "
+            "'general' creates broad instruction prompts and preserves the model's "
+            "own free-form responses with LM loss; "
             "'random' creates hand-templated MCQ prompts from a small vocabulary; "
             "'source' pseudo-labels an existing prompt bank and is not memory-free "
             "if that prompt bank contains mastered-set questions."
@@ -125,6 +127,7 @@ def parse_args() -> argparse.Namespace:
             "cnl",
             "cnl_synth",
             "cnl_synth_icl",
+            "cnl_synth_general",
             "cnl_margin",
             "cnl_leaky",
             "cnl_margin_synth",
@@ -297,12 +300,46 @@ def tokenize_prompt(tokenizer: Any, question: str, max_length: int) -> dict[str,
     }
 
 
+def tokenize_lm_row(tokenizer: Any, row: dict[str, Any], max_length: int) -> dict[str, Any] | None:
+    instruction = row.get("instruction") or row.get("question")
+    response = row.get("response") or row.get("answer")
+    if not instruction or not response:
+        return None
+    prompt_ids = tokenizer(format_prompt(tokenizer, instruction), add_special_tokens=False)["input_ids"]
+    response_ids = tokenizer(str(response).strip(), add_special_tokens=False)["input_ids"]
+    if tokenizer.eos_token_id is not None:
+        response_ids = response_ids + [tokenizer.eos_token_id]
+    ids = prompt_ids + response_ids
+    if len(prompt_ids) < 1 or len(response_ids) < 1 or len(ids) >= max_length:
+        return None
+
+    target_ids = ids[1:] + [tokenizer.pad_token_id]
+    loss_mask = [False] * len(ids)
+    start = max(0, len(prompt_ids) - 1)
+    for i in range(start, len(ids) - 1):
+        loss_mask[i] = True
+    pad = max_length - len(ids)
+    return {
+        "tokens": jnp.asarray([ids + [tokenizer.pad_token_id] * pad], dtype=jnp.int32),
+        "target_ids": jnp.asarray([target_ids + [tokenizer.pad_token_id] * pad], dtype=jnp.int32),
+        "loss_mask": jnp.asarray([loss_mask + [False] * pad], dtype=bool),
+        "instruction": instruction,
+        "response": response,
+    }
+
+
 def array_batch(batch: dict[str, Any]) -> dict[str, jax.Array]:
+    if "label_id" in batch:
+        return {
+            "tokens": batch["tokens"],
+            "attention_mask": batch["attention_mask"],
+            "last_idx": batch["last_idx"],
+            "label_id": batch["label_id"],
+        }
     return {
         "tokens": batch["tokens"],
-        "attention_mask": batch["attention_mask"],
-        "last_idx": batch["last_idx"],
-        "label_id": batch["label_id"],
+        "target_ids": batch["target_ids"],
+        "loss_mask": batch["loss_mask"],
     }
 
 
@@ -318,6 +355,12 @@ def make_optimizer(name: str, lr: float, weight_decay: float = 1e-4) -> optax.Gr
 
 def loss_for_batch(forward: Any, weights: Any, batch: dict[str, jax.Array]) -> jax.Array:
     logits = forward(batch["tokens"], weights)
+    if "target_ids" in batch:
+        logprobs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+        target_logprobs = jnp.take_along_axis(logprobs, batch["target_ids"][..., None], axis=-1).squeeze(-1)
+        loss_mask = batch["loss_mask"].astype(jnp.float32)
+        return -(target_logprobs * loss_mask).sum() / jnp.maximum(loss_mask.sum(), 1.0)
+
     logits = logits.at[jnp.arange(logits.shape[0]), batch["last_idx"], :].get(
         out_sharding=P("data", "model")
     )
@@ -473,6 +516,125 @@ SYNTHETIC_TOPICS = [
     "daily life",
     "workplace decisions",
 ]
+
+
+GENERAL_SYNTHETIC_TASKS = [
+    ("math", "Solve this briefly and show the key step: {topic}."),
+    ("coding", "Write a concise Python function for this task: {topic}. Include only the code and a short note."),
+    ("debugging", "A user is confused about {topic}. Give a concise diagnostic explanation and a likely fix."),
+    ("science", "Explain the core idea behind {topic} in a way a careful student could use."),
+    ("medicine", "Answer this medical study question cautiously and educationally: {topic}."),
+    ("reasoning", "Compare two plausible answers about {topic}, then state which one is better and why."),
+    ("instruction", "Follow this instruction in a concise, useful way: {topic}."),
+    ("factual", "Give a compact factual answer about {topic}, including one important caveat."),
+]
+
+
+GENERAL_SYNTHETIC_TOPICS = [
+    "why regularization can reduce overfitting",
+    "how to compute the area of a triangle from base and height",
+    "when a hash map is preferable to a list",
+    "why a binary search requires sorted input",
+    "how gradient descent updates parameters",
+    "the difference between precision and recall",
+    "why antibiotics do not treat viral infections",
+    "how vaccines train immune memory",
+    "what comparative advantage means",
+    "why correlation does not imply causation",
+    "how photosynthesis stores energy",
+    "the role of mitochondria in cells",
+    "how to handle a division-by-zero bug",
+    "how to reverse a string in Python",
+    "how to parse a small CSV file",
+    "why unit tests help refactoring",
+    "how to estimate probability from repeated trials",
+    "how supply and demand affect price",
+    "why active reading improves comprehension",
+    "how to evaluate a source for credibility",
+    "how to prioritize tasks under a deadline",
+    "why clear variable names matter",
+    "how evaporation cools a surface",
+    "why randomized controlled trials are useful",
+]
+
+
+def make_general_instruction_rows(n_rows: int, seed: int) -> list[dict[str, Any]]:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n_rows):
+        task_family, template = GENERAL_SYNTHETIC_TASKS[i % len(GENERAL_SYNTHETIC_TASKS)]
+        topic = GENERAL_SYNTHETIC_TOPICS[int(rng.integers(0, len(GENERAL_SYNTHETIC_TOPICS)))]
+        instruction = template.format(topic=topic)
+        rows.append(
+            {
+                "instruction": instruction,
+                "synthetic_prompt": True,
+                "synthetic_prompt_id": i,
+                "synthetic_prompt_method": "general_seed",
+                "synthetic_topic": topic,
+                "synthetic_task_family": task_family,
+            }
+        )
+    return rows
+
+
+def generate_synthetic_general_rows(
+    model: Any,
+    weights: Any,
+    sample_fn: Callable[..., Any],
+    n_rows: int,
+    *,
+    max_length: int,
+    max_new_tokens: int,
+    batch_size: int,
+    retries: int,
+    temperature: float,
+    seed: int,
+) -> list[dict[str, Any]]:
+    if n_rows <= 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    attempts = 0
+    max_attempts = max(n_rows, n_rows * max(1, retries))
+    with tqdm(total=n_rows, desc="generate general synthetic responses") as pbar:
+        while len(rows) < n_rows and attempts < max_attempts:
+            cur_batch = min(batch_size, max_attempts - attempts)
+            prompt_rows = make_general_instruction_rows(cur_batch, seed + attempts)
+            attempts += cur_batch
+            completions = sample_completions(
+                model,
+                weights,
+                sample_fn,
+                [row["instruction"] for row in prompt_rows],
+                max_length=max_length,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                seed=seed + attempts,
+            )
+            for row, response in zip(prompt_rows, completions):
+                response = response.strip()
+                if not response or len(response.split()) < 3:
+                    continue
+                key = (row["instruction"].strip().lower(), response[:200].strip().lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                out = dict(row)
+                out["response"] = response
+                out["synthetic_prompt_id"] = len(rows)
+                out["synthetic_prompt_method"] = "general_self_response"
+                out["synthetic_generation_temperature"] = temperature
+                rows.append(out)
+                pbar.update(1)
+                if len(rows) >= n_rows:
+                    break
+    if len(rows) < n_rows:
+        raise ValueError(
+            f"generated only {len(rows)}/{n_rows} general synthetic rows; "
+            "increase --synthetic_generation_retries or inspect generation outputs"
+        )
+    return rows
 
 
 def make_generation_prompt(
@@ -815,6 +977,45 @@ def make_synthetic_correct_batches(
     return batches
 
 
+def make_synthetic_general_batches(
+    rows: list[dict[str, Any]],
+    tokenizer: Any,
+    max_length: int,
+    *,
+    out_jsonl: str,
+) -> list[dict[str, Any]]:
+    os.makedirs(os.path.dirname(out_jsonl) or ".", exist_ok=True)
+    batches = []
+    skipped = 0
+    with open(out_jsonl, "w", encoding="utf-8") as f:
+        for row in tqdm(rows, desc="make general synthetic reference"):
+            batch = tokenize_lm_row(tokenizer, row, max_length)
+            if batch is None:
+                skipped += 1
+                continue
+            batches.append(batch)
+            write_jsonl_line(
+                f,
+                {
+                    "instruction": row["instruction"],
+                    "response": row["response"],
+                    "synthetic": True,
+                    "synthetic_method": "qwen3_general_self_response",
+                    "synthetic_prompt_id": row.get("synthetic_prompt_id"),
+                    "synthetic_prompt_method": row.get("synthetic_prompt_method"),
+                    "synthetic_topic": row.get("synthetic_topic"),
+                    "synthetic_task_family": row.get("synthetic_task_family"),
+                    "synthetic_generation_temperature": row.get("synthetic_generation_temperature"),
+                },
+            )
+
+    print("========== General Synthetic Reference Summary ==========")
+    print(f"Source rows    : {len(rows)}")
+    print(f"Kept           : {len(batches)}")
+    print(f"Skipped        : {skipped}")
+    return batches
+
+
 def split_rows(
     rows: list[dict[str, Any]],
     tokenizer: Any,
@@ -905,6 +1106,7 @@ def method_id(method: str) -> int:
         "cnl_margin_synth": 5,
         "cnl_leaky_synth": 6,
         "cnl_synth_icl": 7,
+        "cnl_synth_general": 8,
     }.get(method, -1)
 
 
@@ -921,6 +1123,7 @@ def uses_synthetic_reference(args: argparse.Namespace) -> bool:
     return effective_method(args) in {
         "cnl_synth",
         "cnl_synth_icl",
+        "cnl_synth_general",
         "cnl_margin_synth",
         "cnl_leaky_synth",
     }
@@ -936,6 +1139,8 @@ def method_variant(args: argparse.Namespace) -> str:
         return f"{method}_{args.synthetic_correct_mode}_{args.synthetic_correct_size_match}"
     if method == "cnl_synth_icl":
         return f"{method}_{args.synthetic_correct_size_match}_k{args.synthetic_icl_examples}"
+    if method == "cnl_synth_general":
+        return f"{method}_{args.synthetic_correct_size_match}"
     if method == "cnl_margin_synth":
         return f"{method}_{args.synthetic_correct_size_match}_m{args.cnl_margin:g}"
     if method == "cnl_leaky_synth":
@@ -955,6 +1160,7 @@ def method_variant_id(args: argparse.Namespace) -> int:
     return {
         "cnl_synth": 20,
         "cnl_synth_icl": 30,
+        "cnl_synth_general": 40,
         "cnl_margin_synth": 50,
         "cnl_leaky_synth": 60,
     }.get(method, 90) + size_offset
@@ -966,10 +1172,12 @@ def wandb_tags(args: argparse.Namespace) -> list[str]:
     if uses_synthetic_reference(args):
         tags.append(f"synth_size:{args.synthetic_correct_size_match}")
         tags.append(f"synth_mode:{args.synthetic_correct_mode}")
-        if args.synthetic_correct_mode in ("generate", "icl"):
+        if args.synthetic_correct_mode in ("generate", "icl", "general"):
             tags.append(f"synth_gen_temp:{args.synthetic_generation_temperature}")
         if method == "cnl_synth_icl":
             tags.append(f"synth_icl_k:{args.synthetic_icl_examples}")
+        if method == "cnl_synth_general":
+            tags.append("synth_loss:lm")
     if method.startswith("cnl"):
         tags.append(f"cnl_mask:{effective_cnl_mask_mode(args)}")
     return tags
@@ -1063,6 +1271,8 @@ def main() -> None:
         raise ValueError("--synthetic_generation_temperature must be positive")
     if args.method_name == "cnl_synth_icl":
         args.synthetic_correct_mode = "icl"
+    if args.method_name == "cnl_synth_general":
+        args.synthetic_correct_mode = "general"
     if uses_synthetic_reference(args) and args.correct_eval_scope == "subset":
         print(
             "Synthetic-reference methods evaluate retention on the real mastered set; "
@@ -1149,7 +1359,20 @@ def main() -> None:
             matched_synth_n = len(wrong_batches)
         else:
             matched_synth_n = args.synthetic_correct_max_rows or args.synthetic_correct_n
-        if args.synthetic_correct_mode == "random":
+        if args.synthetic_correct_mode == "general":
+            synthetic_rows = generate_synthetic_general_rows(
+                model,
+                weights,
+                sample_fn,
+                matched_synth_n,
+                max_length=args.synthetic_generation_max_length,
+                max_new_tokens=args.synthetic_generation_max_new_tokens,
+                batch_size=args.synthetic_generation_batch_size,
+                retries=args.synthetic_generation_retries,
+                temperature=args.synthetic_generation_temperature,
+                seed=args.synthetic_seed,
+            )
+        elif args.synthetic_correct_mode == "random":
             synthetic_rows = make_random_mcq_rows(matched_synth_n, args.synthetic_seed)
         elif args.synthetic_correct_mode == "generate":
             synthetic_rows = generate_synthetic_mcq_rows(
@@ -1191,19 +1414,27 @@ def main() -> None:
         with open(prompt_rows_path, "w", encoding="utf-8") as f:
             for row in synthetic_rows:
                 write_jsonl_line(f, row)
-        correct_ref_source_batches = make_synthetic_correct_batches(
-            synthetic_rows,
-            model.tokenizer,
-            weights,
-            predict_logits_fn,
-            cand_ids,
-            args.max_length,
-            label_mode=args.synthetic_label_mode,
-            temperature=args.synthetic_temperature,
-            min_confidence=args.synthetic_min_confidence,
-            seed=args.synthetic_seed,
-            out_jsonl=str(jsonl_dir / "synthetic_correct_reference.jsonl"),
-        )
+        if args.synthetic_correct_mode == "general":
+            correct_ref_source_batches = make_synthetic_general_batches(
+                synthetic_rows,
+                model.tokenizer,
+                args.max_length,
+                out_jsonl=str(jsonl_dir / "synthetic_correct_reference.jsonl"),
+            )
+        else:
+            correct_ref_source_batches = make_synthetic_correct_batches(
+                synthetic_rows,
+                model.tokenizer,
+                weights,
+                predict_logits_fn,
+                cand_ids,
+                args.max_length,
+                label_mode=args.synthetic_label_mode,
+                temperature=args.synthetic_temperature,
+                min_confidence=args.synthetic_min_confidence,
+                seed=args.synthetic_seed,
+                out_jsonl=str(jsonl_dir / "synthetic_correct_reference.jsonl"),
+            )
         if not correct_ref_source_batches:
             raise ValueError("synthetic correct/reference set is empty")
     else:
@@ -1313,9 +1544,9 @@ def main() -> None:
                 "synthetic_correct_n_effective": len(correct_ref_source_batches) if uses_synthetic_reference(args) else "",
                 "synthetic_label_mode": args.synthetic_label_mode if uses_synthetic_reference(args) else "",
                 "synthetic_temperature": args.synthetic_temperature if uses_synthetic_reference(args) else "",
-                "synthetic_generation_temperature": args.synthetic_generation_temperature if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
-                "synthetic_generation_max_length": args.synthetic_generation_max_length if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
-                "synthetic_generation_max_new_tokens": args.synthetic_generation_max_new_tokens if args.synthetic_correct_mode in ("generate", "icl") and uses_synthetic_reference(args) else "",
+                "synthetic_generation_temperature": args.synthetic_generation_temperature if args.synthetic_correct_mode in ("generate", "icl", "general") and uses_synthetic_reference(args) else "",
+                "synthetic_generation_max_length": args.synthetic_generation_max_length if args.synthetic_correct_mode in ("generate", "icl", "general") and uses_synthetic_reference(args) else "",
+                "synthetic_generation_max_new_tokens": args.synthetic_generation_max_new_tokens if args.synthetic_correct_mode in ("generate", "icl", "general") and uses_synthetic_reference(args) else "",
                 "synthetic_icl_examples": args.synthetic_icl_examples if method == "cnl_synth_icl" else "",
             }
         )

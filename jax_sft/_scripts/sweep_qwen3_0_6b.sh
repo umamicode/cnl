@@ -19,6 +19,8 @@ set -euo pipefail
 # synthetic MCQ prompts and the model's own pseudo-labels, with no mastered rows.
 # cnl_synth_icl saves a small mastered-set context, uses it only to generate new
 # same-format MCQ prompts across varied topics, then pseudo-labels those prompts.
+# cnl_synth_general uses broad synthetic instruction/response pairs and LM loss
+# as the preservation reference, with no mastered rows.
 
 DATASET="${DATASET:-${1:-csqa}}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-0.6B}"
@@ -92,6 +94,11 @@ run_one() {
     synth_suffix="-synthicl${synth_size_match}-k${SYNTHETIC_ICL_EXAMPLES}"
     temp_suffix="-temp${synth_temperature}"
     synth_mode="icl"
+  elif [[ "${method}" == "cnl_synth_general" ]]; then
+    use_freeze="1"
+    synth_suffix="-synthgeneral${synth_size_match}"
+    temp_suffix="-temp${synth_temperature}"
+    synth_mode="general"
   elif [[ "${method}" == "cnl_margin" ]]; then
     use_freeze="1"
     cnl_mask_mode="margin"
@@ -229,6 +236,16 @@ for lr in ${LRS}; do
             done
           done
         elif [[ "${method}" == "cnl_synth_icl" ]]; then
+          for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
+            for synth_temperature in ${SYNTH_TEMPERATURES}; do
+              for mask_stage in ${MASK_STAGES}; do
+                SKIP_SPLIT_FOR_RUN=$([[ "${first_run}" == "1" ]] && echo 0 || echo 1)
+                run_one "${method}" "${lr}" "${epochs}" "${optimizer}" "${mask_stage}" "${synth_size_match}" "${synth_temperature}" "0.0" "0.0"
+                first_run=0
+              done
+            done
+          done
+        elif [[ "${method}" == "cnl_synth_general" ]]; then
           for synth_size_match in ${SYNTHETIC_CORRECT_SIZE_MATCHES}; do
             for synth_temperature in ${SYNTH_TEMPERATURES}; do
               for mask_stage in ${MASK_STAGES}; do
