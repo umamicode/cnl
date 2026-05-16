@@ -357,7 +357,11 @@ def loss_for_batch(forward: Any, weights: Any, batch: dict[str, jax.Array]) -> j
     logits = forward(batch["tokens"], weights)
     if "target_ids" in batch:
         logprobs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
-        target_logprobs = jnp.take_along_axis(logprobs, batch["target_ids"][..., None], axis=-1).squeeze(-1)
+        batch_idx = jnp.arange(logprobs.shape[0])[:, None]
+        pos_idx = jnp.arange(logprobs.shape[1])[None, :]
+        target_logprobs = logprobs.at[batch_idx, pos_idx, batch["target_ids"]].get(
+            out_sharding=P("data", None)
+        )
         loss_mask = batch["loss_mask"].astype(jnp.float32)
         return -(target_logprobs * loss_mask).sum() / jnp.maximum(loss_mask.sum(), 1.0)
 
